@@ -97,7 +97,7 @@ def run(args):
                 api_key="ollama",
                 base_url=local_model_url(config),
                 max_tokens=256,
-                timeout=120,
+                timeout=float(config.get("model_timeout", 120)),
             )
             runtime = IdentityRuntime(storage=_get_storage(args), adapter=adapter)
             try:

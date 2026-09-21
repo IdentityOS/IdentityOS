@@ -77,6 +77,8 @@ For a separate local OpenAI-compatible server such as llama.cpp, set
 `model_base_url` to its loopback HTTP API (for example
 `http://127.0.0.1:11435/v1`) and `model` to its configured alias. The default is
 local Ollama on port 11434. Remote endpoints and URL credentials are rejected.
+`model_timeout` overrides the default 120-second model timeout for slower local
+hardware; increasing it does not improve latency.
 
 Create or select identities using the existing CLI. Then copy
 `examples/phone/config.json` to `.identity_phone/config.json`, fill in **canonical
