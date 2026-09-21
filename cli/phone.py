@@ -5,6 +5,17 @@ import getpass
 import json
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
+
+
+def local_model_url(config):
+    url = config.get("model_base_url", "http://127.0.0.1:11434/v1")
+    parsed = urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("Phone model_base_url must be a local HTTP endpoint")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Phone model_base_url must not contain credentials, query or fragment")
+    return url
 
 
 def add_parser(sub):
@@ -84,7 +95,7 @@ def run(args):
             adapter = OpenAIAdapter(
                 model=config["model"],
                 api_key="ollama",
-                base_url="http://127.0.0.1:11434/v1",
+                base_url=local_model_url(config),
                 max_tokens=256,
                 timeout=120,
             )

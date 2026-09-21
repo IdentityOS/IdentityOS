@@ -54,7 +54,7 @@ Download dependencies/models once; calls then need no external network. Use an
 Asterisk release whose AudioSocket application forwards DTMF (22.6 or newer is
 recommended; Ubuntu's older 20.6 package does not forward DTMF). Required modules
 include `res_agi`, `res_speech`, `res_audiosocket`, `app_audiosocket`, PJSIP,
-RTP, and the ulaw/linear codecs plus their dependencies. Check installed modules:
+RTP, `func_callerid`, and the ulaw/linear codecs plus their dependencies. Check installed modules:
 
 ```sh
 asterisk -rx 'module show like audiosocket'
@@ -72,6 +72,11 @@ it does not silently acquire models. Alternatively set STT to:
 ```json
 {"backend":"whisper.cpp","executable":"/absolute/path/whisper-cli","model":"/absolute/path/ggml-base.en.bin"}
 ```
+
+For a separate local OpenAI-compatible server such as llama.cpp, set
+`model_base_url` to its loopback HTTP API (for example
+`http://127.0.0.1:11435/v1`) and `model` to its configured alias. The default is
+local Ollama on port 11434. Remote endpoints and URL credentials are rejected.
 
 Create or select identities using the existing CLI. Then copy
 `examples/phone/config.json` to `.identity_phone/config.json`, fill in **canonical

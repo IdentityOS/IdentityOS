@@ -22,6 +22,16 @@ from runtime.phone.audio import EnergyVAD
 from runtime.phone.switchboard import Switchboard, VoiceCall
 
 
+def test_phone_model_endpoint_stays_local():
+    from cli.phone import local_model_url
+
+    assert local_model_url({}) == "http://127.0.0.1:11434/v1"
+    assert local_model_url({"model_base_url": "http://127.0.0.1:11435/v1"}).endswith("11435/v1")
+    for url in ("https://example.com/v1", "http://127.0.0.1@example.com/v1", "http://user:secret@localhost/v1"):
+        with pytest.raises(ValueError):
+            local_model_url({"model_base_url": url})
+
+
 @pytest.fixture
 def router(tmp_path):
     router = IdentityRouter(tmp_path / "routing.db", {"aster": "a", "gabriel": "g"})
