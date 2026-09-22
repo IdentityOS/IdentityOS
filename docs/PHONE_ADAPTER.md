@@ -79,6 +79,12 @@ For a separate local OpenAI-compatible server such as llama.cpp, set
 local Ollama on port 11434. Remote endpoints and URL credentials are rejected.
 `model_timeout` overrides the default 120-second model timeout for slower local
 hardware; increasing it does not improve latency.
+Models without reliable native tool calling can select `tool_mode: "legacy"`.
+This uses the existing Ollama adapter's bounded text-tool loop, including the same
+runtime capability validation and evidence handling; it does not grant extra
+permissions. The default remains `native`. Use the model's embedded chat template
+when serving it with llama.cpp; with `--jinja`, a literal template name may be
+treated as template text rather than a built-in template selection.
 
 Create or select identities using the existing CLI. Then copy
 `examples/phone/config.json` to `.identity_phone/config.json`, fill in **canonical
@@ -219,6 +225,15 @@ inspection. Supply the same local model configuration with `--config`, and add
 `--dtmf` to select the second directory entry before the question. This separate
 test endpoint may use loopback IP identification; never use that shortcut on a
 LAN-facing listener. This is not a physical microphone/earpiece acceptance test.
+
+Whisper receives the configured identity names as vocabulary hints; these do not
+guarantee exact name spelling. For stronger end-to-end verification, pass
+`--store /path/to/the/live/json/store` to the probe. It then requires a **new**
+persisted response from the selected canonical identity for the spoken question,
+and at least 70% normalized text similarity between that response and the returned
+audio transcription. This tolerates phonetic name spelling without accepting an
+old memory, a greeting, or a response belonging to another identity. Without
+`--store`, the probe retains its exact-name transcription assertion.
 
 Protocol references: [Asterisk AudioSocket framing](https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/),
 [AudioSocket dialplan application](https://docs.asterisk.org/Latest_API/API_Documentation/Dialplan_Applications/AudioSocket/),

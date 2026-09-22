@@ -18,6 +18,23 @@ def local_model_url(config):
     return url
 
 
+def phone_adapter(config):
+    from adapters.openai_adapter import OllamaAdapter, OpenAIAdapter
+
+    mode = config.get("tool_mode", "native")
+    if mode not in ("native", "legacy"):
+        raise ValueError("Phone tool_mode must be native or legacy")
+    options = dict(
+        model=config["model"],
+        base_url=local_model_url(config),
+        max_tokens=256,
+        timeout=float(config.get("model_timeout", 120)),
+    )
+    if mode == "legacy":
+        return OllamaAdapter(**options, prefer_legacy_tools=True)
+    return OpenAIAdapter(**options, api_key="ollama")
+
+
 def add_parser(sub):
     parser = sub.add_parser("phone", help="Local IdentityOS switchboard")
     parser.add_argument("--config", default=".identity_phone/config.json")
@@ -88,17 +105,10 @@ def run(args):
             else:
                 print("asterisk: local SIP via FastAGI + AudioSocket. PSTN providers: not installed.")
         else:
-            from adapters.openai_adapter import OpenAIAdapter
             from runtime.phone.asterisk import PhoneGateway
             from runtime.phone.audio import EnergyVAD, FasterWhisper, Piper, WhisperCpp
 
-            adapter = OpenAIAdapter(
-                model=config["model"],
-                api_key="ollama",
-                base_url=local_model_url(config),
-                max_tokens=256,
-                timeout=float(config.get("model_timeout", 120)),
-            )
+            adapter = phone_adapter(config)
             runtime = IdentityRuntime(storage=_get_storage(args), adapter=adapter)
             try:
                 runtime.load_persisted()
@@ -112,7 +122,7 @@ def run(args):
                     logging.basicConfig(level=logging.INFO)
                     stt_config = config["stt"]
                     if stt_config["backend"] == "faster-whisper":
-                        stt = FasterWhisper(stt_config["model"])
+                        stt = FasterWhisper(stt_config["model"], vocabulary=router.identities)
                     elif stt_config["backend"] == "whisper.cpp":
                         stt = WhisperCpp(stt_config["executable"], stt_config["model"])
                     else:

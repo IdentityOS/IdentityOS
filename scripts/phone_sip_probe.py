@@ -10,6 +10,7 @@ import struct
 import sys
 import uuid
 import wave
+from difflib import SequenceMatcher
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -29,11 +30,20 @@ async def main():
         "never point this unauthenticated harness at a LAN/public listener."
     )
     parser.add_argument("--config", required=True)
+    parser.add_argument("--store", help="Optional live JSON store for independent runtime-response verification")
     parser.add_argument("--dtmf", action="store_true")
     parser.add_argument("--output", default="/tmp/identityos-phone-probe.wav")
     parser.add_argument("--wait", type=int, default=60)
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    expected = list(config["identities"])[1 if args.dtmf else 0]
+    storage = None
+    before = set()
+    if args.store:
+        from runtime.persistence import JSONFileBackend
+
+        storage = JSONFileBackend(root_dir=args.store)
+        before = {m["id"] for m in storage.load_memories(config["identities"][expected])}
     loop = asyncio.get_running_loop()
     sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sip.bind(("127.0.0.1", 0))
@@ -86,6 +96,7 @@ async def main():
     ssrc = 73123
     outgoing = asyncio.Queue()
     running = True
+    last_audio = None
 
     async def tx():
         nonlocal seq, ts
@@ -99,10 +110,14 @@ async def main():
             await asyncio.sleep(0.02)
 
     async def rx():
+        nonlocal last_audio
         while running:
             p, _ = await loop.sock_recvfrom(rtp, 4096)
             if len(p) > 12 and p[1] & 127 == 0:
-                received.extend(audioop.ulaw2lin(p[12:], 2))
+                pcm = audioop.ulaw2lin(p[12:], 2)
+                received.extend(pcm)
+                if audioop.rms(pcm, 2) > 100:
+                    last_audio = loop.time()
 
     async def dtmf(digit):
         nonlocal seq
@@ -118,7 +133,7 @@ async def main():
 
     tasks = [asyncio.create_task(tx()), asyncio.create_task(rx())]
     tts = Piper(config["tts"]["executable"], config["tts"]["model"])
-    stt = await asyncio.to_thread(FasterWhisper, config["stt"]["model"])
+    stt = await asyncio.to_thread(FasterWhisper, config["stt"]["model"], vocabulary=config["identities"])
     try:
         await asyncio.sleep(14)
         print("GREETING:", await stt.transcribe(bytes(received)), flush=True)
@@ -131,7 +146,27 @@ async def main():
         speech = await tts.synthesize("Hello. What is your name?")
         for pos in range(0, len(speech), 320):
             await outgoing.put(speech[pos : pos + 320].ljust(320, b"\0"))
-        await asyncio.sleep(args.wait)
+        send_deadline = loop.time() + len(speech) / 16000 + 10
+        while not outgoing.empty():
+            for task in tasks:
+                if task.done():
+                    task.result()
+                    raise RuntimeError("RTP transport stopped while sending the question")
+            if loop.time() >= send_deadline:
+                raise RuntimeError("Timed out sending the spoken question")
+            await asyncio.sleep(0.02)
+        # Start response evidence after our question, excluding greeting tails.
+        received.clear()
+        last_audio = None
+        deadline = loop.time() + args.wait
+        while loop.time() < deadline:
+            await asyncio.sleep(0.1)
+            for task in tasks:
+                if task.done():
+                    task.result()
+                    raise RuntimeError("RTP transport stopped before response")
+            if last_audio is not None and loop.time() - last_audio >= 2:
+                break
         audible = speech_window(bytes(received))
         reply = await stt.transcribe(audible) if audible else ""
         print("RUNTIME REPLY:", reply, flush=True)
@@ -140,8 +175,24 @@ async def main():
             f.writeframes(received)
         if not reply.strip():
             raise RuntimeError("No audible runtime response observed")
-        expected = list(config["identities"])[1 if args.dtmf else 0]
-        if expected.casefold() not in reply.casefold():
+        if storage:
+            def normalized(text):
+                return " ".join(re.findall(r"\w+", text.casefold()))
+
+            matches = []
+            for memory in storage.load_memories(config["identities"][expected]):
+                if memory["id"] in before:
+                    continue
+                user, separator, answer = memory.get("content", "").partition("\nAssistant: ")
+                if not separator or normalized(user) != "user hello what is your name":
+                    continue
+                if expected.casefold() not in answer.casefold():
+                    continue
+                matches.append(SequenceMatcher(None, normalized(answer), normalized(reply)).ratio())
+            if not matches or max(matches) < 0.7:
+                raise RuntimeError("Returned speech did not match a new response persisted by the selected identity")
+            print(f"PERSISTENCE MATCH: identity={expected}; audio/text similarity={max(matches):.3f}", flush=True)
+        elif expected.casefold() not in reply.casefold():
             raise RuntimeError("Returned speech did not identify the selected identity")
     finally:
         await send("BYE", 2)

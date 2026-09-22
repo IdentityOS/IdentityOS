@@ -32,6 +32,18 @@ def test_phone_model_endpoint_stays_local():
             local_model_url({"model_base_url": url})
 
 
+def test_phone_adapter_modes_and_invalid_configuration():
+    from adapters.openai_adapter import OllamaAdapter, OpenAIAdapter
+    from cli.phone import phone_adapter
+
+    assert type(phone_adapter({"model": "local"})) is OpenAIAdapter
+    legacy = phone_adapter({"model": "local", "tool_mode": "legacy"})
+    assert isinstance(legacy, OllamaAdapter)
+    assert legacy.prefer_legacy_tools
+    with pytest.raises(ValueError, match="tool_mode"):
+        phone_adapter({"model": "local", "tool_mode": "unvalidated"})
+
+
 @pytest.fixture
 def router(tmp_path):
     router = IdentityRouter(tmp_path / "routing.db", {"aster": "a", "gabriel": "g"})

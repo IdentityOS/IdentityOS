@@ -110,18 +110,25 @@ class Piper:
 class FasterWhisper:
     """Optional local Whisper backend; network downloads are forbidden at serve time."""
 
-    def __init__(self, model):
+    def __init__(self, model, vocabulary=()):
         from faster_whisper import WhisperModel
 
         self.model = WhisperModel(model, device="cpu", compute_type="int8", local_files_only=True)
         self.lock = asyncio.Lock()
+        self.initial_prompt = "Names: " + ", ".join(vocabulary) + "." if vocabulary else None
 
     async def transcribe(self, pcm):
         import numpy as np
 
+        if not pcm:
+            return ""
+
         def run():
             audio = np.frombuffer(resample(pcm, 8000, 16000), dtype="<i2").astype(np.float32) / 32768
-            segments, _ = self.model.transcribe(audio, language="en", beam_size=1, condition_on_previous_text=False)
+            segments, _ = self.model.transcribe(
+                audio, language="en", beam_size=1, condition_on_previous_text=False,
+                initial_prompt=self.initial_prompt,
+            )
             return " ".join(s.text.strip() for s in segments)
 
         async with self.lock:
