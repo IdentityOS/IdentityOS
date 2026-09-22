@@ -186,13 +186,13 @@ async def main():
                 user, separator, answer = memory.get("content", "").partition("\nAssistant: ")
                 if not separator or normalized(user) != "user hello what is your name":
                     continue
-                if expected.casefold() not in answer.casefold():
+                if not re.search(r"\b" + re.escape(expected) + r"\b", answer, re.I):
                     continue
                 matches.append(SequenceMatcher(None, normalized(answer), normalized(reply)).ratio())
             if not matches or max(matches) < 0.7:
                 raise RuntimeError("Returned speech did not match a new response persisted by the selected identity")
             print(f"PERSISTENCE MATCH: identity={expected}; audio/text similarity={max(matches):.3f}", flush=True)
-        elif expected.casefold() not in reply.casefold():
+        elif not re.search(r"\b" + re.escape(expected) + r"\b", reply, re.I):
             raise RuntimeError("Returned speech did not identify the selected identity")
     finally:
         await send("BYE", 2)

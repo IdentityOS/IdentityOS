@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-import time as _time
+import threading
+import time
 from typing import Any, Optional
 
 from .base import BaseAdapter
@@ -23,7 +24,7 @@ _EXHAUSTION_TOKENS = [
     # window or quota may still answer, so this is fall-through, not terminal.
     "413", "request too large", "context_length", "maximum context", "max_tokens",
     "connection", "timed out", "timeout", "generation deadline reached",
-    "service unavailable", "502", "503", "504", "404",
+    "service unavailable", "500", "502", "503", "504", "404",
     "api keys exhausted", "invalid api key", "model_not_found", "model does not exist",
     "authentication failed", "401",
     "402", "payment required", "billing",
@@ -52,8 +53,12 @@ class ChainAdapter(BaseAdapter):
         self,
         adapters: list[BaseAdapter],
         model: str = "",
+        cooldown_seconds: float = 0,
     ) -> None:
         self._adapters = adapters
+        self._cooldown_seconds = max(0, cooldown_seconds)
+        self._cooldowns: dict[int, float] = {}
+        self._cooldown_lock = threading.Lock()
         first = adapters[0] if adapters else None
         super().__init__(model=model or (first.model if first else ""))
         # Provenance of the most recent generate(): which provider/model
@@ -100,19 +105,24 @@ class ChainAdapter(BaseAdapter):
         errors: list[tuple[str, str]] = []
         self.last_selection = None
         budget = kwargs.pop("_generation_budget", None)
-        deadline = _time.monotonic() + float(budget) if budget is not None else None
+        deadline = time.monotonic() + float(budget) if budget is not None else None
         tool_attempted = False
-        execute = kwargs.get("execute_tool")
-        if execute:
-            def tracked(name, args):
+        execute_tool = kwargs.get("execute_tool")
+        if execute_tool is not None:
+            def tracked(*args, **tool_kwargs):
                 nonlocal tool_attempted
                 tool_attempted = True  # even an uncertain/failed effect must not replay
-                return execute(name, args)
+                return execute_tool(*args, **tool_kwargs)
             kwargs["execute_tool"] = tracked
 
         for idx, adapter in enumerate(self._adapters):
             name = type(adapter).__name__
-            started = _time.monotonic()
+            with self._cooldown_lock:
+                cooling = self._cooldowns.get(idx, 0) > time.monotonic()
+            if cooling:
+                errors.append((name, "provider cooling down"))
+                continue
+            started = time.monotonic()
             if deadline is not None:
                 remaining = deadline - started
                 if remaining <= 0:
@@ -130,7 +140,7 @@ class ChainAdapter(BaseAdapter):
                 self.last_selection = {
                     "provider": name,
                     "model": str(getattr(adapter, "model", "") or ""),
-                    "latency_ms": int((_time.monotonic() - started) * 1000),
+                    "latency_ms": int((time.monotonic() - started) * 1000),
                     "attempted": [{"provider": n, "error": e} for n, e in errors],
                 }
                 return output
@@ -140,11 +150,13 @@ class ChainAdapter(BaseAdapter):
                     self.last_selection = {
                         "provider": name,
                         "model": str(getattr(adapter, "model", "") or ""),
-                        "latency_ms": int((_time.monotonic() - started) * 1000),
+                        "latency_ms": int((time.monotonic() - started) * 1000),
                         "attempted": [{"provider": n, "error": e} for n, e in errors],
                         "error": str(exc),
                     }
                     raise  # Non-exhaustion errors propagate immediately
+                with self._cooldown_lock:
+                    self._cooldowns[idx] = time.monotonic() + self._cooldown_seconds
                 if idx < len(self._adapters) - 1:
                     next_name = type(self._adapters[idx + 1]).__name__
                     logger.warning(

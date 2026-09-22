@@ -21,6 +21,33 @@ def local_model_url(config):
 def phone_adapter(config):
     from adapters.openai_adapter import OllamaAdapter, OpenAIAdapter
 
+    if config.get("provider_env_file"):
+        from dotenv import dotenv_values
+
+        from adapters.chain import ChainAdapter
+        from adapters.configuration import build_adapter_from_env
+
+        # Deliberately select providers instead of importing an entire .env into
+        # this process (it may also contain GitHub and unrelated credentials).
+        source = dotenv_values(config["provider_env_file"], interpolate=False)
+        providers = config.get("cloud_providers", ["groq", "cerebras", "openrouter"])
+        if not providers or any(p not in ("groq", "cerebras", "openrouter") for p in providers):
+            raise ValueError("Phone cloud_providers must select groq, cerebras or openrouter")
+        adapters = []
+        for provider in dict.fromkeys(providers):
+            prefix = provider.upper() + "_"
+            values = {k: v for k, v in source.items() if k.startswith(prefix) and v}
+            values["OPENAI_TIMEOUT"] = str(config.get("model_timeout", 20))
+            adapter = build_adapter_from_env(values)
+            if adapter is None:
+                continue
+            adapter.timeout = float(config.get("model_timeout", 20))
+            adapter.max_tokens = int(config.get("max_tokens", 256))
+            adapters.append(adapter)
+        if not adapters:
+            raise ValueError("No configured phone cloud provider credentials found")
+        return ChainAdapter(adapters, cooldown_seconds=60)
+
     mode = config.get("tool_mode", "native")
     if mode not in ("native", "legacy"):
         raise ValueError("Phone tool_mode must be native or legacy")

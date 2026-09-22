@@ -86,6 +86,41 @@ permissions. The default remains `native`. Use the model's embedded chat templat
 when serving it with llama.cpp; with `--jinja`, a literal template name may be
 treated as template text rather than a built-in template selection.
 
+### Optional cloud inference with provider failover
+
+Local inference remains the default. To explicitly use existing cloud credentials,
+add these fields to the private phone configuration:
+
+```json
+{
+  "provider_env_file": "/absolute/path/to/private.env",
+  "cloud_providers": ["groq", "openrouter"],
+  "model_timeout": 20,
+  "max_tokens": 512
+}
+```
+
+The selected providers are tried in order using the existing adapter system.
+Supported selections are `groq`, `cerebras`, and `openrouter`; their corresponding
+`*_API_KEY` and `*_MODEL` variables are read from the file. Groq and Cerebras also
+support numbered keys through their existing cooldown mechanisms. Unrelated
+credentials and `IDENTITY_ADAPTER` settings are not imported into the phone
+configuration. Missing credentials fail closed; secrets must never be committed.
+
+Unusable providers fall through to the next provider and cool down for 60 seconds
+before another turn tries them. Rate limits still apply, including limits shared
+by keys in the same account. This is availability fallback, not unlimited quota.
+Timeouts apply per provider request; tool rounds and provider retries can extend
+the total turn. A failure after a capability invocation is not replayed through
+another provider, to avoid executing the same action twice. Exhausting all
+providers remains an observable failure, not a fabricated response.
+
+Cloud inference sends the composed identity context and caller's transcribed
+messages to the selected providers. Speech recognition, speech synthesis,
+routing, sessions, and persistence remain local. No public SIP listener, tunnel,
+or phone number is required. When changing an existing service to cloud inference,
+remove its local-model readiness prerequisite; keep the gateway and PBX enabled.
+
 Create or select identities using the existing CLI. Then copy
 `examples/phone/config.json` to `.identity_phone/config.json`, fill in **canonical
 identity IDs**, local model paths, and executable path. Aliases must be lowercase
