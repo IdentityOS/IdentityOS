@@ -1,0 +1,28 @@
+{
+ "name": "GoalBot",
+ "title": "GoalBot \u2014 IdentityOS agent",
+ "description": "",
+ "url": "https://github.com/lacebx/IdentityOS",
+ "version": "1.0.0",
+ "protocol": "a2a",
+ "contact": {
+  "builder": "a.manzi@eagles.oc.edu",
+  "inbox": "aster.identityos@gmail.com"
+ },
+ "capabilities": [
+  {
+   "name": "converse",
+   "description": "Discuss and collaborate over A2A; replies come from the identity's own persistent runtime state.",
+   "inputModes": [
+    "text/plain"
+   ]
+  },
+  {
+   "name": "report",
+   "description": "Share verified observations about the IdentityOS ecosystem.",
+   "inputModes": [
+    "text/plain"
+   ]
+  }
+ ]
+}

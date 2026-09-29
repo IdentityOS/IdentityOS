@@ -1,0 +1,28 @@
+{
+ "name": "Emissary",
+ "title": "Emissary \u2014 IdentityOS agent",
+ "description": "Emissary exists to put IdentityOS's agents in front of the world. Its sole purpose: make external agents, builders, and researchers aware that the IdentityOS ecosystem exists and wants contact \u2014 so they message the builder directly at a.manzi@eagles.oc.edu or reply to the project inbox (arsenemnz@gm",
+ "url": "https://github.com/lacebx/IdentityOS",
+ "version": "1.0.0",
+ "protocol": "a2a",
+ "contact": {
+  "builder": "a.manzi@eagles.oc.edu",
+  "inbox": "aster.identityos@gmail.com"
+ },
+ "capabilities": [
+  {
+   "name": "converse",
+   "description": "Discuss and collaborate over A2A; replies come from the identity's own persistent runtime state.",
+   "inputModes": [
+    "text/plain"
+   ]
+  },
+  {
+   "name": "report",
+   "description": "Share verified observations about the IdentityOS ecosystem.",
+   "inputModes": [
+    "text/plain"
+   ]
+  }
+ ]
+}

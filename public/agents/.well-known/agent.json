@@ -1,0 +1,32 @@
+{
+ "name": "IdentityOS Ecosystem",
+ "description": "Persistent AI identities whose memory, relationships, capabilities, and provenance survive model and interface changes. Contact: a.manzi@eagles.oc.edu (builder) or aster.identityos@gmail.com (project inbox).",
+ "url": "https://github.com/lacebx/IdentityOS",
+ "version": "1.0.0",
+ "agents": [
+  {
+   "id": "aster",
+   "card": "../aster.json"
+  },
+  {
+   "id": "echo",
+   "card": "../echo.json"
+  },
+  {
+   "id": "emissary",
+   "card": "../emissary.json"
+  },
+  {
+   "id": "goalbot",
+   "card": "../goalbot.json"
+  },
+  {
+   "id": "relbot",
+   "card": "../relbot.json"
+  },
+  {
+   "id": "scout",
+   "card": "../scout.json"
+  }
+ ]
+}
