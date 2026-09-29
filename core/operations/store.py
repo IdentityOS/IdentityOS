@@ -80,6 +80,28 @@ class OperationsStore:
     def _load(self, namespace: str) -> Optional[dict]:
         return self._storage.load(self.identity_id, namespace)
 
+    def refresh(self) -> None:
+        """Re-load every namespace from storage.
+
+        A long-running process's in-memory cache goes stale as other writers
+        (scripts, other processes) persist newer state; last-writer-wins on
+        the next save would silently erase their updates (observed: a daemon
+        built days earlier overwrote a relationship added by a fresh script).
+        Refreshing at tick start keeps every writer's changes.
+        """
+        self._project = self._load_project()
+        self._needs = self._load_needs()
+        self._opportunities = self._load_opportunities()
+        self._evaluations = self._load_evaluations()
+        self._relationships = self._load_relationships()
+        self._messages = self._load_messages()
+        self._provenance = self._load_provenance()
+        self._follow_ups = self._load_follow_ups()
+        self._controls = self._load_controls()
+        self._budget = self._load_budget()
+        self._notifications = self._load_notifications()
+        self._mailbox_cursor = self._load_mailbox_cursor()
+
     def _load_project(self) -> Optional[ProjectState]:
         raw = self._load(self.PROJECT)
         return ProjectState.from_dict(raw) if raw else None

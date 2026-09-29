@@ -212,6 +212,10 @@ class OperationsEngine:
         now = now or datetime.now(timezone.utc)
         report = TickReport()
 
+        # Fresh state from storage before any phase: a long-running process's
+        # in-memory cache goes stale as other writers persist newer state.
+        self.store.refresh()
+
         if self.store.controls().paused:
             self._provenance(ProvenancePhase.CONTROL, "tick skipped: operator paused", action="tick")
             report.skipped.append({"reason": "paused"})
