@@ -288,6 +288,10 @@ def runtime_health(store: Any, presence_store: Any = None, *,
         jobs_state = _DEGRADED
         jobs_detail = (f"{len(jobs_summary['awaiting_response'])} message(s) awaiting "
                        f"a response, {len(stalled)} stalled")
+    elif jobs_summary.get("awaiting_authorization"):
+        jobs_state = _HEALTHY
+        jobs_detail = (f"{len(jobs_summary['awaiting_authorization'])} message(s) "
+                       "awaiting your authorization")
     else:
         jobs_state = _HEALTHY
         jobs_detail = "no unanswered inbound"

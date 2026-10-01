@@ -842,11 +842,85 @@ def cmd_aster_would_send(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── interop: capabilities / acquire / culture commons ───────────────────────
+    p_send = sub.add_parser("send", help="Send one authoritative email through the engine", parents=[base])
+    p_send.add_argument("--to", required=True)
+    p_send.add_argument("--subject", required=True)
+    p_send.add_argument("--body", default=None)
+    p_send.add_argument("--body-file", default=None)
+    p_send.add_argument("--attachment", action="append", default=[])
+    p_send.add_argument("--confirm", action="store_true")
+
+    # ─────────────────────────────────────────
+
+
+
+def cmd_aster_send(args: argparse.Namespace) -> int:
+    """Send one outbound email through Aster's live runtime (transport + voice).
+
+    This is an explicitly principal-initiated contact, not a self-drive
+    outreach discovered by the loop: the pipeline is only used for transport,
+    voice-gate, evidence, and provenance.
+    """
+    parser = argparse.ArgumentParser(prog="identity aster send")
+    parser.add_argument("--to", required=True)
+    parser.add_argument("--subject", required=True)
+    parser.add_argument("--body", default=None)
+    parser.add_argument("--body-file", default=None, help="Path to a text file with the body")
+    parser.add_argument("--attachment", action="append", default=[],
+                        help="Filesystem path to attach; may be given multiple times")
+    parser.add_argument("--confirm", action="store_true",
+                        help="Actually send; without this the command dry-runs and prints the envelope")
+    storage = _get_storage(args)
+    engine = _build_engine(args)
+    if engine._transport is None:
+        print("No transport configured for Aster; run 'identity aster email-check' first.", file=sys.stderr)
+        return 1
+
+    body = args.body
+    if args.body_file:
+        p = Path(args.body_file)
+        if not p.is_file():
+            print(f"Missing body file: {p}", file=sys.stderr)
+            return 1
+        body = p.read_text(encoding="utf-8")
+    if not body:
+        print("No body provided (--body or --body-file).", file=sys.stderr)
+        return 1
+
+    attachments = [{"path": str(Path(a).resolve()), "filename": Path(a).name}
+                   for a in args.attachment]
+
+    if not args.confirm:
+        draft = {
+            "to": args.to,
+            "subject": args.subject,
+            "body": body,
+            "attachments": attachments,
+        }
+        _print_json({"dry_run": True, "would_send": draft, "evidence": "the identity would compose and dispatch via its engine"})
+        return 0
+
+    result = engine._send(
+        to=args.to,
+        subject=args.subject,
+        body=body,
+        attachments=attachments,
+    )
+    if not result.get("ok"):
+        print(f"error: {result.get('error')}", file=sys.stderr)
+        return 1
+    engine.store.append_provenance(ProvenanceEntry(
+        phase=ProvenancePhase.ACT,
+        summary="sent direct outreach at principal instruction",
+        action="principal_send",
+        result=result.get("external_id", ""),
+        refs={"to": args.to, "subject": args.subject,
+              "attachments": [a["filename"] for a in attachments]},
+    ))
+    _print_json({"sent": True, "to": args.to, "external_id": result.get("external_id")})
 
 
 def cmd_aster_capabilities(args: argparse.Namespace) -> int:
-    """List installed interop capabilities, their skills and effective grants."""
     storage = _get_storage(args)
     registry = _registry(storage)
     out: list[dict[str, Any]] = []
@@ -1178,6 +1252,7 @@ _ASTER_COMMAND_MAP = {
     "outbound-mode": cmd_aster_outbound_mode,
     "would-send": cmd_aster_would_send,
     "email-check": cmd_aster_email_check,
+    "send": cmd_aster_send,
     "capabilities": cmd_aster_capabilities,
     "acquire": cmd_aster_acquire,
     "health-serve": cmd_aster_health_serve,

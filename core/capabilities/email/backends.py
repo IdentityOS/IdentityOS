@@ -307,10 +307,17 @@ class FileMailboxBackend:
         sender_display_name: str = "",
         reply_to: str = "",
         html_body: str = "",
+        attachments: Optional[Iterable[dict[str, str]]] = None,
     ) -> dict[str, Any]:
         if not to:
             raise MailboxError("recipient address is required")
         message_id = message_id or generate_message_id("identityos.local")
+        attachment_records = [
+            {"filename": str(a.get("filename") or "attachment"),
+             "path": Path(str(a.get("path") or "")).name,
+             }
+            for a in (attachments or []) if a.get("path")
+        ]
         record = {
             "external_id": message_id,
             "thread_id": thread_id or f"thread-{uuid.uuid4().hex[:10]}",
@@ -323,6 +330,7 @@ class FileMailboxBackend:
             "subject": subject,
             "body": body,
             "html_body": html_body,
+            "attachments": attachment_records,
             "sent_at": time.time(),
         }
         items = self._read(self._outbox)
@@ -396,6 +404,7 @@ class SMTPBackend:
         sender_display_name: str = "",
         reply_to: str = "",
         html_body: str = "",
+        attachments: Optional[Iterable[dict[str, str]]] = None,
     ) -> dict[str, Any]:
         if not self.host or not self.sender:
             return {"ok": False, "error": "SMTP host and sender are required"}
@@ -423,6 +432,20 @@ class SMTPBackend:
         msg.set_content(body)
         if html_body:
             msg.add_alternative(html_body, subtype="html")
+
+        for attachment in attachments or []:
+            # Caller provides a path to read; we do not honor inline bytes so
+            # the transport boundary always sees what was actually read.
+            path = str(attachment.get("path") or "")
+            filename = str(attachment.get("filename") or "attachment")
+            maintype = str(attachment.get("maintype") or "application")
+            subtype = str(attachment.get("subtype") or "octet-stream")
+            if not path:
+                continue
+            msg.add_attachment(
+                Path(path).read_bytes(),
+                maintype=maintype, subtype=subtype, filename=filename,
+            )
 
         try:
             with smtplib.SMTP(self.host, self.port, timeout=20) as smtp:
@@ -756,12 +779,14 @@ class MailboxTransport:
         in_reply_to: str = "", references: Optional[Iterable[str]] = None,
         message_id: str = "", sender: str = "", sender_display_name: str = "",
         reply_to: str = "", html_body: str = "",
+        attachments: Optional[Iterable[dict[str, str]]] = None,
     ) -> dict[str, Any]:
         return self.backend.send(
             to=to, subject=subject, body=body, thread_id=thread_id,
             in_reply_to=in_reply_to, references=references, message_id=message_id,
             sender=sender, sender_display_name=sender_display_name,
             reply_to=reply_to, html_body=html_body,
+            attachments=attachments,
         )
 
     def fetch_inbox_with_cursor(self, *, cursor: Optional[dict[str, Any]] = None) -> dict[str, Any]:

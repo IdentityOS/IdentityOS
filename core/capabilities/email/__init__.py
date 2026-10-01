@@ -135,6 +135,13 @@ class EmailCapability(Capability):
                     "sender_display_name": {"type": "string"},
                     "reply_to": {"type": "string"},
                     "html_body": {"type": "string"},
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {
+                            "path": {"type": "string"},
+                            "filename": {"type": "string"},
+                        }},
+                    },
                 },
                 required=("to", "body"),
             ),
@@ -205,6 +212,7 @@ class EmailCapability(Capability):
                     sender_display_name=str(params.get("sender_display_name", "")),
                     reply_to=str(params.get("reply_to", "")),
                     html_body=str(params.get("html_body", "")),
+                    attachments=list(params.get("attachments") or []),
                 )
                 return CapabilityResult.from_data(
                     "email", skill_name, result, source="email",
