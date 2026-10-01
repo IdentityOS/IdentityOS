@@ -30,6 +30,7 @@ from core.executive.engine import get_executive_for, register_executive
 from core.executive.models import Task, TaskStatus, TaskStep, TaskStepStatus
 from core.executive.state import IllegalTransition
 from core.executive.workflow import extract_capability_name, is_acquisition_goal
+from core.skill_forge import AcceptanceCase, ForgeProposal, SkillForge
 from runtime.persistence import JSONFileBackend
 
 
@@ -49,9 +50,74 @@ def registry(storage):
     return CapabilityRegistry(storage=storage)
 
 
+class _ForgeDesigner:
+    def design(self, request, identity=None):
+        return [
+            AcceptanceCase(
+                name="metadata is observable",
+                skill=f"{request.capability_id}.info",
+                expected={"capability": request.capability_id, "status": "available"},
+            ),
+            AcceptanceCase(
+                name="metadata is stable for a second invocation",
+                skill=f"{request.capability_id}.info",
+                expected={"capability": request.capability_id, "status": "available"},
+            ),
+        ]
+
+
+class _ForgeAuthor:
+    def author(self, request, identity=None):
+        cap_id = request.capability_id
+        class_name = "".join(part.title() for part in cap_id.split("_")) + "Capability"
+        source = f'''from typing import Any
+from core.capabilities.base import Capability, Skill
+from core.capabilities.registry import register
+from core.capabilities.result import CapabilityResult
+@register
+class {class_name}(Capability):
+    id = "{cap_id}"
+    name = "{cap_id.replace('_', ' ').title()}"
+    version = "1.0.0"
+    author = "executive-test"
+    description = "Expose truthful capability metadata"
+    permissions = ["public"]
+    def install(self, identity_id: str, storage: Any) -> None:
+        storage.save(identity_id, "capability.{cap_id}", {{"installed": True}})
+    def uninstall(self, identity_id: str, storage: Any) -> None:
+        storage.delete(identity_id, "capability.{cap_id}")
+    def prompts(self, identity_id: str) -> list[str]:
+        return ["Use {cap_id}.info for metadata."]
+    def skills(self) -> list[Skill]:
+        return [Skill(name="{cap_id}.info", description="Return metadata", verification_params={{}})]
+    def call(self, skill_name: str, **params: Any) -> CapabilityResult:
+        if skill_name != "{cap_id}.info":
+            return CapabilityResult.fail(self.id, skill_name, "unknown_skill", "unknown skill")
+        return CapabilityResult.ok(self.id, skill_name, {{"capability": self.id, "status": "available"}}, source="metadata")
+'''
+        return ForgeProposal(source=source, manifest={
+            "id": cap_id,
+            "name": cap_id.replace("_", " ").title(),
+            "version": "1.0.0",
+            "author": "executive-test",
+            "description": "Expose truthful capability metadata",
+            "permissions": ["public"],
+            "dependencies": [],
+            "skills": [{"name": f"{cap_id}.info", "description": "Return metadata"}],
+        })
+
+
+def _test_forge():
+    return SkillForge(
+        os.path.normpath(os.path.join(os.path.dirname(__file__), "..")),
+        author=_ForgeAuthor(),
+        test_designer=_ForgeDesigner(),
+    )
+
+
 @pytest.fixture()
 def engine(storage, registry):
-    eng = ExecutiveRuntime(storage=storage, capability_registry=registry)
+    eng = ExecutiveRuntime(storage=storage, capability_registry=registry, skill_forge=_test_forge())
     register_executive(eng)
     yield eng
     eng.shutdown()
@@ -73,6 +139,7 @@ def _cleanup_generated(cap_id):
     for rel in (
         f"core/capabilities/{cap_id}",
         f"registry/capabilities/{cap_id}",
+        f".identity_forge/artifacts/{cap_id}",
     ):
         p = os.path.normpath(os.path.join(root, rel))
         if os.path.isdir(p):
@@ -161,7 +228,9 @@ def test_never_silently_abandon_queued_task():
 # ── 2. Persistence & interruption recovery ───────────────────────────────
 
 def test_task_persists_across_engine_restart(storage, registry, fresh_cap):
-    eng1 = ExecutiveRuntime(storage=storage, capability_registry=registry)
+    eng1 = ExecutiveRuntime(
+        storage=storage, capability_registry=registry, skill_forge=_test_forge(),
+    )
     t = eng1.start_task(
         f"create a {fresh_cap} capability and install it",
         "tester", original_request=f"create a {fresh_cap} capability and install it",
@@ -172,7 +241,9 @@ def test_task_persists_across_engine_restart(storage, registry, fresh_cap):
     assert len(t1.evidence) >= 1
 
     # brand-new engine over the same storage == interrupted process resumed
-    eng2 = ExecutiveRuntime(storage=storage, capability_registry=registry)
+    eng2 = ExecutiveRuntime(
+        storage=storage, capability_registry=registry, skill_forge=_test_forge(),
+    )
     recovered = eng2.recover("tester")
     assert any(r.task_id == t.task_id for r in recovered)
     final = _run_until_terminal(eng2, "tester", t.task_id)
@@ -299,7 +370,8 @@ def test_full_acquisition_flow_with_evidence(engine, fresh_cap):
 
     labels = {e.label for e in final.evidence}
     for expected in (
-        "file_generated", "syntax_valid", "interface_valid",
+        "behavioral_tests_isolated", "artifact_packaged", "file_generated",
+        "syntax_valid", "interface_valid",
         "registry_published", "installed", "capability_activated",
         "safe_probe_invoked", "installation_persisted",
         "capability_reloaded", "capability_reused",

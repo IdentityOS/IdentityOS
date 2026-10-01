@@ -10,16 +10,13 @@ Guards against the evidence-footprint regressions:
      reporting honest exit codes/stdout without replacing repository files.
 """
 
-import os
-import re
-import tempfile
-import ast
+import time
 from pathlib import Path
 
 import pytest
 
-from core.capabilities import CapabilityResult
 from core.capabilities.registry import lookup
+from core.executive.models import TaskStatus
 from core.planner import SkillRouter
 from runtime.orchestrator import IdentityRuntime
 
@@ -93,15 +90,29 @@ def test_task_planner_generates_command_exec_plan():
     assert run_step["params"]["command"] == "hostname"
 
 
-def test_command_exec_template_is_valid_python():
+def test_unknown_capability_delegates_to_durable_acquisition():
     from core.capabilities.task_planner import TaskPlannerCapability
-    tmpl = TaskPlannerCapability._command_exec_template()
-    ast.parse(tmpl)  # raises SyntaxError if invalid
-    assert "subprocess" in tmpl
+
+    plan = TaskPlannerCapability._generate_plan(
+        "create a novel_echo capability, validate it, publish it, and install it"
+    )
+
+    assert [step["action"] for step in plan] == ["request_acquisition"]
+    assert plan[0]["params"]["cap_id"] == "novel_echo"
+
+
+def test_legacy_direct_scaffolds_are_disabled():
+    from core.capabilities.task_planner import TaskPlannerCapability
+
+    with pytest.raises(RuntimeError, match="Skill Forge"):
+        TaskPlannerCapability._capability_template("unverified")
+    with pytest.raises(RuntimeError, match="verified command_exec"):
+        TaskPlannerCapability._command_exec_template()
 
 
 def test_task_planner_runs_real_command_honest_failure(tmp_path):
-    from core.capabilities.task_planner import TaskPlannerCapability
+    from runtime.persistence import JSONFileBackend
+
     root = Path(__file__).resolve().parents[1]
     catalog_path = root / "registry" / "capabilities" / "index.json"
     manifest_path = root / "registry" / "capabilities" / "command_exec" / "manifest.json"
@@ -110,21 +121,57 @@ def test_task_planner_runs_real_command_honest_failure(tmp_path):
         path: path.read_bytes()
         for path in (catalog_path, manifest_path, source_path)
     }
-    res = TaskPlannerCapability({}).call(
+    runtime = IdentityRuntime(
+        storage=JSONFileBackend(root_dir=str(tmp_path / "store")),
+    )
+    identity_id = "durable-planner"
+    registry = runtime.capability_registry
+    registry.install(identity_id, "task_planner")
+    registry.install(identity_id, "command_exec")
+    registry.grant(identity_id, "task_planner", "task:execute")
+
+    res = registry.call(
+        identity_id,
         "task_planner.plan_and_execute",
-        goal="create a command execution capability and run a-command-that-does-not-exist-xyz",
+        goal="run a command through the durable Executive",
+        steps=[{
+            "action": "run_command",
+            "description": "Run a missing binary",
+            "params": {
+                "cap_id": "command_exec",
+                "command": "a-command-that-does-not-exist-xyz",
+            },
+        }],
     )
     assert res.success
-    results = {r["action"]: r for r in res.data["results"]}
-    run = results["run_command"]
-    data = run["data"]
+    assert res.data["durable"] is True
+
+    task_id = res.data["task_id"]
+    deadline = time.time() + 2
+    task = runtime.executive.get_task(identity_id, task_id)
+    while task.status != TaskStatus.BLOCKED and time.time() < deadline:
+        time.sleep(0.01)
+        task = runtime.executive.get_task(identity_id, task_id)
+    assert task.status == TaskStatus.BLOCKED
+    assert task.steps[0].result["block_type"] == "authorization_required"
+
+    registry.grant(identity_id, "command_exec", "process:execute")
+    runtime.executive.resume_task(identity_id, task_id)
+    deadline = time.time() + 2
+    while task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED} and time.time() < deadline:
+        runtime.executive.process_ready(identity_id, max_steps=5)
+        task = runtime.executive.get_task(identity_id, task_id)
+
+    assert task.status == TaskStatus.FAILED
+    data = task.steps[0].result
     # The real binary is missing → exit 127, honest error surfaced
     assert data.get("exit_code") == 127
     assert "not found" in (data.get("stderr") or "")
-    assert run["success"] is False
-    assert res.data["all_succeeded"] is False
-    assert res.data["failed"] >= 1
+    assert [
+        attempt["status"] for attempt in task.steps[0].execution_attempts
+    ] == ["blocked", "failed"]
     assert {path: path.read_bytes() for path in before} == before
+    runtime.shutdown()
 
 
 def test_evidence_footer_label_no_duplication():

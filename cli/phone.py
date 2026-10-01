@@ -1,0 +1,126 @@
+"""Phone administration. No public listener or paid provider by default."""
+
+import asyncio
+import getpass
+import json
+import logging
+from pathlib import Path
+
+
+def add_parser(sub):
+    parser = sub.add_parser("phone", help="Local IdentityOS switchboard")
+    parser.add_argument("--config", default=".identity_phone/config.json")
+    commands = parser.add_subparsers(dest="phone_command", required=True)
+    for name in ("status", "callers", "routes"):
+        commands.add_parser(name)
+    serve = commands.add_parser("serve")
+    serve.add_argument("--agi-port", type=int, default=4573)
+    serve.add_argument("--audio-port", type=int, default=9092)
+    default = commands.add_parser("default")
+    default.add_argument("--user", required=True)
+    default.add_argument("--identity", required=True)
+    bind = commands.add_parser("bind")
+    bind.add_argument("--caller", required=True)
+    bind.add_argument("--user", required=True)
+    bind.add_argument("--identity")
+    pin = commands.add_parser("pin").add_subparsers(dest="pin_command", required=True).add_parser("set")
+    pin.add_argument("--user", required=True)
+    provider = commands.add_parser("provider").add_subparsers(dest="provider_command", required=True)
+    provider.add_parser("list")
+    configure = provider.add_parser("configure")
+    configure.add_argument("--reference", required=True, help="Path to local configuration, never inline secrets")
+    sms = commands.add_parser("sms", help="Local SMS ingress test; does not send carrier SMS")
+    sms.add_argument("--caller", required=True)
+    sms.add_argument("text")
+
+
+def run(args):
+    from cli.main import _get_storage
+    from core.channels.router import IdentityRouter
+    from runtime.orchestrator import IdentityRuntime
+    from runtime.phone.switchboard import Switchboard
+
+    config_path = Path(args.config).resolve()
+    try:
+        config = json.loads(config_path.read_text())
+        router = IdentityRouter(config_path.parent / "routing.sqlite3", config["identities"])
+        command = args.phone_command
+        if command in ("status", "routes"):
+            print(
+                json.dumps(
+                    {
+                        "provider": "asterisk",
+                        "listeners": "loopback only",
+                        "identities": router.identities,
+                        "state": str(router.path),
+                        "note": "Configuration status only; does not prove a live call.",
+                    },
+                    indent=2,
+                )
+            )
+        elif command == "callers":
+            print(json.dumps(router.callers(), indent=2))
+        elif command == "bind":
+            router.bind(args.caller, args.user, args.identity)
+        elif command == "default":
+            router.default(args.user, args.identity)
+        elif command == "pin":
+            pin = getpass.getpass("New PIN (6–12 digits): ")
+            if pin != getpass.getpass("Repeat PIN: "):
+                raise ValueError("PINs do not match")
+            router.set_pin(args.user, pin)
+        elif command == "provider":
+            if args.provider_command == "configure":
+                ref = str(Path(args.reference).resolve(strict=True))
+                with router.db() as db:
+                    db.execute("INSERT OR REPLACE INTO providers VALUES(?,?)", ("asterisk", ref))
+            else:
+                print("asterisk: local SIP via FastAGI + AudioSocket. PSTN providers: not installed.")
+        else:
+            from adapters.openai_adapter import OpenAIAdapter
+            from runtime.phone.asterisk import PhoneGateway
+            from runtime.phone.audio import EnergyVAD, FasterWhisper, Piper, WhisperCpp
+
+            adapter = OpenAIAdapter(
+                model=config["model"],
+                api_key="ollama",
+                base_url="http://127.0.0.1:11434/v1",
+                max_tokens=256,
+                timeout=120,
+            )
+            runtime = IdentityRuntime(storage=_get_storage(args), adapter=adapter)
+            try:
+                runtime.load_persisted()
+                for identity_id in router.identities.values():
+                    if runtime.identity_store.get(identity_id) is None:
+                        raise ValueError(f"Identity is not loaded: {identity_id}")
+                board = Switchboard(router, runtime)
+                if command == "sms":
+                    print(board.sms(args.caller, args.text))
+                else:
+                    logging.basicConfig(level=logging.INFO)
+                    stt_config = config["stt"]
+                    if stt_config["backend"] == "faster-whisper":
+                        stt = FasterWhisper(stt_config["model"])
+                    elif stt_config["backend"] == "whisper.cpp":
+                        stt = WhisperCpp(stt_config["executable"], stt_config["model"])
+                    else:
+                        raise ValueError("Unknown STT backend")
+                    tts = Piper(config["tts"]["executable"], config["tts"]["model"])
+                    gateway = PhoneGateway(
+                        board, stt, tts, EnergyVAD(config.get("vad_threshold", 500)), audio_port=args.audio_port
+                    )
+                    print(
+                        f"Starting IdentityOS phone: FastAGI 127.0.0.1:{args.agi_port}; "
+                        f"AudioSocket 127.0.0.1:{args.audio_port}",
+                        flush=True,
+                    )
+                    asyncio.run(gateway.serve(args.agi_port))
+            finally:
+                runtime.shutdown()
+    except (OSError, ValueError, KeyError, PermissionError) as exc:
+        print(f"Phone configuration/action failed: {exc}")
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    return 0

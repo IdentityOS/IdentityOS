@@ -111,8 +111,11 @@ class ContextComposer:
         emotion_state: Optional[Any] = None,
         capability_prompts: Optional[list[str]] = None,
         evidence_results: Optional[list[dict]] = None,
+        channel_context: Optional[Any] = None,
     ) -> ComposedContext:
         ctx = ComposedContext()
+        if channel_context is not None:
+            ctx.custom_blocks["channel"] = channel_context.render()
 
         if self.include_identity:
             ctx.identity_block = self._render_identity(identity)

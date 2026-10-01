@@ -1,0 +1,40 @@
+{
+  "id": "reflex",
+  "name": "Reflex Execution",
+  "version": "1.0.0",
+  "author": "IdentityOS",
+  "license": "MIT",
+  "homepage": "https://github.com/lacebx/IdentityOS",
+  "description": "Dispatch promoted procedures from exact triggers without model replanning.",
+  "provider": "core.capabilities.reflex.ReflexCapability",
+  "config_schema": {
+    "type": "object",
+    "properties": {}
+  },
+  "permissions": {
+    "network": false,
+    "filesystem": false
+  },
+  "skills": [
+    {
+      "name": "reflex.list",
+      "description": "List registered reflexes and current-version readiness",
+      "permission": "public"
+    },
+    {
+      "name": "reflex.register",
+      "description": "Bind an exact trigger to a promoted procedure champion",
+      "permission": "reflex:manage"
+    },
+    {
+      "name": "reflex.execute",
+      "description": "Queue the promoted procedure matching an exact utterance",
+      "permission": "task:execute"
+    },
+    {
+      "name": "reflex.reconcile",
+      "description": "Verify a reflex run against its durable task and evidence",
+      "permission": "public"
+    }
+  ]
+}

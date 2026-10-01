@@ -45,6 +45,11 @@ def verify_trust(
     if num_skills >= 5:
         score += 0.05
 
+    # A digest alone is not trust. Give limited credit only when the manifest
+    # binds it to independently executed behavioral cases.
+    if candidate.behaviorally_verified and candidate.artifact_sha256:
+        score += 0.2
+
     score = max(0.0, min(1.0, score))
     candidate.trust_score = round(score, 3)
     return score

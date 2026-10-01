@@ -1,0 +1,7 @@
+{
+  "identities": {"aster": "REPLACE_WITH_ASTER_ID", "gabriel": "REPLACE_WITH_GABRIEL_ID"},
+  "model": "phi4-mini:latest",
+  "stt": {"backend": "faster-whisper", "model": "/absolute/path/to/local/whisper-model"},
+  "tts": {"executable": "/absolute/path/to/venv/bin/piper", "model": "/absolute/path/to/en_US-lessac-medium.onnx"},
+  "vad_threshold": 500
+}

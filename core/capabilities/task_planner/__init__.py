@@ -1,46 +1,11 @@
 from __future__ import annotations
 
-import importlib
 import re
 from typing import Any, Optional
+
 from core.capabilities.base import Capability, Skill, object_schema
-from core.capabilities.registry import register, lookup
+from core.capabilities.registry import lookup, register
 from core.capabilities.result import CapabilityResult
-
-
-def _run_command(params: dict) -> CapabilityResult:
-    """Import a freshly-created capability module, then execute a real
-    command through its ``run`` skill. Returns actual stdout/stderr/exit."""
-    cap_id = params.get("cap_id", "command_exec")
-    command = params.get("command", "")
-    if not command:
-        return CapabilityResult.fail("task_planner", "run_command", "no_command", "No command specified")
-    try:
-        importlib.import_module(f"core.capabilities.{cap_id}")
-    except Exception as e:
-        return CapabilityResult.fail("task_planner", "run_command", "import_failed", f"Could not import {cap_id}: {e}")
-    try:
-        inst = lookup(cap_id)()
-    except Exception as e:
-        return CapabilityResult.fail("task_planner", "run_command", "lookup_failed", f"Capability {cap_id} not registered: {e}")
-    return inst.call(f"{cap_id}.run", command=command)
-
-
-_STEP_HANDLERS = {
-    # File operations
-    "write_file": lambda p: lookup("file_tools")().call("file_tools.write_file", **p),
-    "create_directory": lambda p: lookup("file_tools")().call("file_tools.create_directory", **p),
-    "append_file": lambda p: lookup("file_tools")().call("file_tools.append_file", **p),
-    # Validation
-    "validate_syntax": lambda p: lookup("skill_validator")().call("skill_validator.validate_syntax", **p),
-    "check_interface": lambda p: lookup("skill_validator")().call("skill_validator.check_capability_interface", **p),
-    # Registry
-    "list_capabilities": lambda p: lookup("registry_manager")().call("registry_manager.list_capabilities", **p),
-    "publish_capability": lambda p: lookup("registry_manager")().call("registry_manager.publish_capability", **p),
-    "install_capability": lambda p: lookup("registry_manager")().call("registry_manager.install_capability", **p),
-    # Real command execution through a created capability
-    "run_command": _run_command,
-}
 
 # Keywords that indicate the goal asks for command execution capability
 _COMMAND_INTENT = re.compile(
@@ -53,17 +18,21 @@ _COMMAND_INTENT = re.compile(
 class TaskPlannerCapability(Capability):
     id = "task_planner"
     name = "Task Planner"
-    version = "1.0.0"
+    version = "1.1.0"
     author = "IdentityOS"
     license = "MIT"
     homepage = "https://github.com/lacebx/IdentityOS"
-    description = "Plan and execute multi-step tasks with progress tracking and reporting"
+    description = "Plan multi-step work and queue it in the durable Executive"
     permissions = ["task:execute"]
 
     def __init__(self, config: Optional[dict] = None) -> None:
         super().__init__(config)
+        self._identity_id: Optional[str] = None
+        self._storage: Any = None
 
     def install(self, identity_id: str, storage: Any) -> None:
+        self._identity_id = identity_id
+        self._storage = storage
         storage.save(identity_id, "capability.task_planner", {"installed_at": None})
 
     def uninstall(self, identity_id: str, storage: Any) -> None:
@@ -74,13 +43,31 @@ class TaskPlannerCapability(Capability):
             "## Task Planner Skills (MANDATORY — use for multi-step autonomous tasks)",
             "When asked to create, build, publish, or install anything that requires multiple steps:",
             "  1. Call task_planner.plan_and_execute with your goal as the 'goal' parameter",
-            "  2. The planner will break it into steps, execute each one, and return progress",
-            "  3. Report the final result to the user — do NOT describe intermediate steps in detail",
-            "Example: task_planner.plan_and_execute(goal='create a greeting skill, validate it, publish it, and install it')",
+            "  2. The planner will commit the steps to the durable Executive and return a task ID",
+            "  3. Use Executive task status for observed progress and completion",
+            (
+                "Example: task_planner.plan_and_execute(goal='create a greeting skill, "
+                "validate it, publish it, and install it')"
+            ),
         ]
 
     _SKILLS = [
-        Skill(name="task_planner.plan_and_execute", description="Plan and execute a multi-step task. Provide the goal as text. Returns progress indicators like [1/5] and final results.", permission="task:execute", effect="execute", input_schema=object_schema({"goal": {"type": "string", "minLength": 1}, "steps": {"type": "array"}}, required=("goal",))),
+        Skill(
+            name="task_planner.plan_and_execute",
+            description=(
+                "Plan a multi-step goal and queue it in the durable Executive. "
+                "Returns a persistent task ID for progress tracking."
+            ),
+            permission="task:execute",
+            effect="execute",
+            input_schema=object_schema(
+                {
+                    "goal": {"type": "string", "minLength": 1},
+                    "steps": {"type": "array"},
+                },
+                required=("goal",),
+            ),
+        ),
     ]
 
     def skills(self) -> list[Skill]:
@@ -95,71 +82,107 @@ class TaskPlannerCapability(Capability):
             }
             handler = dispatch.get(skill_name)
             if handler is None:
-                return CapabilityResult.fail("task_planner", skill_name, "unknown_skill", f"Unknown skill: {skill_name}")
+                return CapabilityResult.fail(
+                    "task_planner", skill_name, "unknown_skill", f"Unknown skill: {skill_name}"
+                )
             data = handler(**params)
-            return CapabilityResult.from_data("task_planner", skill_name, data, source="task planner", duration_ms=(_time.monotonic() - _t0) * 1000)
+            return CapabilityResult.from_data(
+                "task_planner",
+                skill_name,
+                data,
+                source="task planner",
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+            )
         except Exception as e:
-            return CapabilityResult.fail("task_planner", skill_name, type(e).__name__, str(e), duration_ms=(_time.monotonic() - _t0) * 1000)
+            return CapabilityResult.fail(
+                "task_planner",
+                skill_name,
+                type(e).__name__,
+                str(e),
+                duration_ms=(_time.monotonic() - _t0) * 1000,
+            )
 
     def _plan_and_execute(self, goal: str = "", steps: Optional[list] = None, **kwargs: Any) -> dict[str, Any]:
-        """
-        Given a goal, generate a step-by-step plan and execute each step.
-        Returns a structured report with progress indicators.
-        """
+        """Plan a goal and commit it to the authoritative durable Executive."""
         if not goal and not steps:
             return {"error": "Provide a 'goal' string describing what you want to accomplish."}
-
-        # If steps are provided directly, use them. Otherwise auto-generate from goal.
         plan = steps or self._generate_plan(goal)
-        total = len(plan)
-        step_results = []
+        if not isinstance(plan, list) or not plan:
+            return {"error": "Planner produced no executable steps."}
+        if self._storage is None or self._identity_id is None:
+            return {
+                "error": "task planner is not installed into a durable identity runtime",
+            }
+        from core.executive.engine import get_executive_for
 
-        for i, step in enumerate(plan, 1):
-            action = step.get("action", "")
-            params = step.get("params", {})
-            description = step.get("description", action)
+        executive = get_executive_for(self._storage)
+        if executive is None:
+            return {"error": "no durable Executive is registered"}
+        acquisition_steps = [
+            step for step in plan if step.get("action") == "request_acquisition"
+        ]
+        if acquisition_steps:
+            if len(plan) != 1:
+                return {
+                    "error": "capability acquisition must be queued before dependent steps",
+                }
+            result = self._request_acquisition(acquisition_steps[0].get("params", {}))
+            if not result.success:
+                return {"error": (result.error or {}).get("message", "acquisition failed")}
+            return {**result.data, "plan": plan, "durable": True}
 
-            progress_line = f"[{i}/{total}] {description}"
-            handler = _STEP_HANDLERS.get(action)
-
-            if handler is None:
-                step_results.append({
-                    "step": i,
-                    "action": action,
-                    "progress": progress_line,
-                    "success": False,
-                    "error": f"No handler for action: {action}",
-                })
-                continue
-
-            try:
-                result = handler(params)
-                step_results.append({
-                    "step": i,
-                    "action": action,
-                    "progress": progress_line,
-                    "success": result.success,
-                    "data": result.data,
-                    "duration_ms": result.duration_ms,
-                })
-            except Exception as e:
-                step_results.append({
-                    "step": i,
-                    "action": action,
-                    "progress": progress_line,
-                    "success": False,
-                    "error": str(e),
-                })
-
-        total_success = sum(1 for r in step_results if r.get("success"))
+        task = executive.start_task(
+            goal=goal,
+            identity_id=self._identity_id,
+            original_request=goal,
+            steps=plan,
+            autostart=True,
+        )
         return {
             "plan": plan,
-            "total_steps": total,
-            "completed": total_success,
-            "failed": total - total_success,
-            "all_succeeded": total_success == total,
-            "results": step_results,
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "total_steps": len(task.steps),
+            "durable": True,
         }
+
+    def _request_acquisition(self, params: dict) -> CapabilityResult:
+        """Delegate generation to the durable Executive/Skill Forge path."""
+        cap_id = str(params.get("cap_id", ""))
+        goal = str(params.get("goal", ""))
+        if not cap_id or not goal:
+            return CapabilityResult.fail(
+                self.id, "request_acquisition", "invalid_request", "cap_id and goal are required",
+            )
+        if self._storage is None or self._identity_id is None:
+            return CapabilityResult.fail(
+                self.id,
+                "request_acquisition",
+                "executive_unavailable",
+                "task planner is not installed into a durable identity runtime",
+            )
+        from core.acquisition import get_acquisition_provider
+
+        provider = get_acquisition_provider(self._storage)
+        if provider is None:
+            return CapabilityResult.fail(
+                self.id,
+                "request_acquisition",
+                "executive_unavailable",
+                "no durable acquisition provider is registered",
+            )
+        task, created = provider.request_acquisition(
+            identity_id=self._identity_id,
+            capability_id=cap_id,
+            goal=goal,
+            original_request=goal,
+        )
+        return CapabilityResult.ok(self.id, "request_acquisition", {
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "created": created,
+            "capability_id": cap_id,
+        }, source="durable executive")
 
     @staticmethod
     def _generate_plan(goal: str) -> list[dict]:
@@ -174,7 +197,10 @@ class TaskPlannerCapability(Capability):
             if m:
                 command = m.group(1)
             else:
-                for kw in ("neofetch", "screenfetch", "pwd", "ls", "uname", "whoami", "date", "uptime", "hostname", "echo"):
+                for kw in (
+                    "neofetch", "screenfetch", "pwd", "ls", "uname", "whoami",
+                    "date", "uptime", "hostname", "echo",
+                ):
                     if re.search(rf'\b{kw}\b', gl):
                         command = kw
                         break
@@ -193,7 +219,11 @@ class TaskPlannerCapability(Capability):
             if m:
                 candidate = m.group(1)
                 # Skip action verbs that aren't capability names
-                if candidate not in ("create", "build", "make", "write", "publish", "install", "validate", "check", "test", "list", "show", "add", "load", "register", "update", "delete", "remove"):
+                if candidate not in (
+                    "create", "build", "make", "write", "publish", "install",
+                    "validate", "check", "test", "list", "show", "add", "load",
+                    "register", "update", "delete", "remove",
+                ):
                     cap_name = candidate
                     break
 
@@ -218,43 +248,13 @@ class TaskPlannerCapability(Capability):
             # replacing their source and marketplace metadata with a generated
             # scaffold merely because the goal also says "create" or "publish".
             if not capability_exists:
-                cap_dir = f"core/capabilities/{cap_name}"
-                cap_path = f"{cap_dir}/__init__.py"
-                template = TaskPlannerCapability._capability_template(cap_name)
                 steps.append({
-                    "action": "create_directory",
-                    "params": {"path": cap_dir},
-                    "description": f"Creating {cap_name} capability directory",
-                })
-                steps.append({
-                    "action": "write_file",
-                    "params": {
-                        "path": cap_path,
-                        "content": template,
-                    },
-                    "description": f"Writing {cap_name} capability code",
+                    "action": "request_acquisition",
+                    "params": {"cap_id": cap_name, "goal": goal},
+                    "description": f"Queuing truthful acquisition of {cap_name}",
                 })
 
-                if "valid" in gl or "check" in gl or "syntax" in gl or "test" in gl:
-                    steps.append({
-                        "action": "validate_syntax",
-                        "params": {"path": cap_path},
-                        "description": f"Validating {cap_name} syntax",
-                    })
-                    steps.append({
-                        "action": "check_interface",
-                        "params": {"path": cap_path},
-                        "description": f"Checking {cap_name} Capability interface",
-                    })
-
-                if "publish" in gl or "register" in gl:
-                    steps.append({
-                        "action": "publish_capability",
-                        "params": {"cap_id": cap_name, "name": cap_name.replace("_", " ").title(), "version": "1.0.0", "description": f"Auto-generated: {goal[:80]}"},
-                        "description": f"Publishing {cap_name} to registry",
-                    })
-
-            if "install" in gl or "add" in gl or "load" in gl:
+            if capability_exists and ("install" in gl or "add" in gl or "load" in gl):
                 steps.append({
                     "action": "install_capability",
                     "params": {"cap_id": cap_name},
@@ -282,144 +282,13 @@ class TaskPlannerCapability(Capability):
     @staticmethod
     def _capability_template(name: str) -> str:
         """Generate a minimal but valid capability Python file."""
-        cap_id = name
-        class_name = "".join(p.title() for p in name.split("_")) + "Capability"
-        skill_name = f"{cap_id}.greet"
-        return f'''from __future__ import annotations
-
-from typing import Any, Optional
-from core.capabilities.base import Capability, Skill
-from core.capabilities.registry import register
-from core.capabilities.result import CapabilityResult
-
-
-@register
-class {class_name}(Capability):
-    id = "{cap_id}"
-    name = "{name.replace('_', ' ').title()}"
-    version = "1.0.0"
-    author = "auto-generated"
-    license = "MIT"
-    description = "Auto-generated capability: {name}"
-    permissions = ["public"]
-
-    def __init__(self, config: Optional[dict] = None) -> None:
-        super().__init__(config)
-
-    def install(self, identity_id: str, storage: Any) -> None:
-        storage.save(identity_id, "capability.{cap_id}", {{"installed_at": None}})
-
-    def uninstall(self, identity_id: str, storage: Any) -> None:
-        storage.delete(identity_id, "capability.{cap_id}")
-
-    def prompts(self, identity_id: str) -> list[str]:
-        return ["## {name} Skill\\nUse {skill_name} to greet."]
-
-    _SKILLS = [
-        Skill(name="{skill_name}", description="Greet the user", permission="public", verification_params={{}}),
-    ]
-
-    def skills(self) -> list[Skill]:
-        return list(self._SKILLS)
-
-    def call(self, skill_name: str, **params: Any) -> CapabilityResult:
-        import time as _time
-        _t0 = _time.monotonic()
-        try:
-            dispatch = {{
-                "{skill_name}": self._greet,
-            }}
-            handler = dispatch.get(skill_name)
-            if handler is None:
-                return CapabilityResult.fail("{cap_id}", skill_name, "unknown_skill", f"Unknown skill: {{skill_name}}")
-            data = handler(**params)
-            return CapabilityResult.from_data("{cap_id}", skill_name, data, source="auto-generated", duration_ms=(_time.monotonic() - _t0) * 1000)
-        except Exception as e:
-            return CapabilityResult.fail("{cap_id}", skill_name, type(e).__name__, str(e), duration_ms=(_time.monotonic() - _t0) * 1000)
-
-    def _greet(self, **kwargs: Any) -> dict[str, Any]:
-        return {{"message": "Hello from {name}!"}}
-'''
+        raise RuntimeError(
+            "direct capability scaffolding is disabled; use the durable Skill Forge acquisition path"
+        )
 
     @staticmethod
     def _command_exec_template() -> str:
         """Generate a real command-execution capability backed by subprocess."""
-        return r'''from __future__ import annotations
-
-import shlex
-import subprocess
-from typing import Any, Optional
-from core.capabilities.base import Capability, Skill
-from core.capabilities.registry import register
-from core.capabilities.result import CapabilityResult
-
-
-@register
-class CommandExecCapability(Capability):
-    id = "command_exec"
-    name = "Command Exec"
-    version = "1.0.0"
-    author = "auto-generated"
-    license = "MIT"
-    description = "Executes real commands without shell expansion and returns actual stdout/stderr/exit code"
-    permissions = ["process:execute"]
-
-    def __init__(self, config: Optional[dict] = None) -> None:
-        super().__init__(config)
-
-    def install(self, identity_id: str, storage: Any) -> None:
-        storage.save(identity_id, "capability.command_exec", {"installed_at": None})
-
-    def uninstall(self, identity_id: str, storage: Any) -> None:
-        storage.delete(identity_id, "capability.command_exec")
-
-    def prompts(self, identity_id: str) -> list[str]:
-        return ["## Command Exec Skill\nUse command_exec.run to execute a command without shell expansion. It returns real stdout/stderr and the exit code."]
-
-    _SKILLS = [
-        Skill(name="command_exec.run", description="Execute a command without shell expansion, returning actual stdout, stderr, and exit code", permission="process:execute", effect="execute", input_schema={"type": "object", "properties": {"command": {"type": "string", "minLength": 1}, "timeout": {"type": "integer", "minimum": 1, "maximum": 300}}, "required": ["command"], "additionalProperties": False}, verification_params={"command": "true", "timeout": 5}),
-    ]
-
-    def skills(self) -> list[Skill]:
-        return list(self._SKILLS)
-
-    def call(self, skill_name: str, **params: Any) -> CapabilityResult:
-        import time as _time
-        _t0 = _time.monotonic()
-        try:
-            dispatch = {
-                "command_exec.run": self._run,
-            }
-            handler = dispatch.get(skill_name)
-            if handler is None:
-                return CapabilityResult.fail("command_exec", skill_name, "unknown_skill", f"Unknown skill: {skill_name}")
-            data = handler(**params)
-            return CapabilityResult.from_data("command_exec", skill_name, data, source="command exec", duration_ms=(_time.monotonic() - _t0) * 1000)
-        except Exception as e:
-            return CapabilityResult.fail("command_exec", skill_name, type(e).__name__, str(e), duration_ms=(_time.monotonic() - _t0) * 1000)
-
-    def _run(self, command: str = "", timeout: int = 30, **kwargs: Any) -> dict[str, Any]:
-        if not command:
-            return {"error": "No command provided", "exit_code": -1, "stdout": "", "stderr": "command is empty"}
-        try:
-            proc = subprocess.run(
-                shlex.split(command),
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=max(1, min(int(timeout), 300)),
-            )
-            return {
-                "command": command,
-                "exit_code": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-                "found": proc.returncode == 0,
-            }
-        except subprocess.TimeoutExpired:
-            return {"command": command, "error": "timeout", "exit_code": 124, "stdout": "", "stderr": f"command timed out after {timeout}s"}
-        except FileNotFoundError:
-            return {"command": command, "error": "not_found", "exit_code": 127, "stdout": "", "stderr": f"command not found: {command}"}
-        except Exception as e:
-            return {"command": command, "error": str(e), "exit_code": -1, "stdout": "", "stderr": str(e)}
-'''
+        raise RuntimeError(
+            "direct capability scaffolding is disabled; install the verified command_exec package"
+        )

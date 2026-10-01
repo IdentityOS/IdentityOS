@@ -21,6 +21,7 @@ benchmarks/results/*
 !benchmarks/results/.gitkeep
 .test_canonical_facts/
 .identitybench/
+.identity_forge/
 MagicMock/
 VISION.md
 
@@ -34,3 +35,6 @@ research/mode-b/manifests/.done-*-both
 research/mode-b/manifests/*-bare.json
 research/mode-b/manifests/*-idos.json
 research/mode-b/manifests/*-smoke.json
+
+# Local switchboard routing and authentication state
+.identity_phone/

@@ -211,12 +211,12 @@
     {
       "id": "task_planner",
       "name": "Task Planner",
-      "version": "1.0.0",
-      "description": "Plan and execute multi-step tasks with progress tracking",
+      "version": "1.1.0",
+      "description": "Plan multi-step work and queue it in the durable Executive",
       "author": "IdentityOS",
       "skills": 1,
       "permissions": [
-        "public"
+        "task:execute"
       ],
       "url": "task_planner/manifest.json"
     },
@@ -231,6 +231,46 @@
         "process:execute"
       ],
       "url": "command_exec/manifest.json"
+    },
+    {
+      "id": "procedure_learning",
+      "name": "Procedure Learning",
+      "version": "1.0.0",
+      "description": "Generalize verified multi-step tasks and promote them against protected held-out examples",
+      "author": "IdentityOS",
+      "skills": 2,
+      "permissions": [
+        "public",
+        "procedure:learn"
+      ],
+      "url": "procedure_learning/manifest.json"
+    },
+    {
+      "id": "reflex",
+      "name": "Reflex Execution",
+      "version": "1.0.0",
+      "description": "Dispatch promoted procedures from exact triggers without model replanning",
+      "author": "IdentityOS",
+      "skills": 4,
+      "permissions": [
+        "public",
+        "reflex:manage",
+        "task:execute"
+      ],
+      "url": "reflex/manifest.json"
+    },
+    {
+      "id": "embodiment",
+      "name": "Cross-Device Embodiment",
+      "version": "1.0.0",
+      "description": "Use host-authorized cameras, voice, browsers, and desktops in one durable task",
+      "author": "IdentityOS",
+      "skills": 3,
+      "permissions": [
+        "public",
+        "embodiment:execute"
+      ],
+      "url": "embodiment/manifest.json"
     }
   ]
 }

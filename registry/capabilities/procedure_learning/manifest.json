@@ -1,0 +1,30 @@
+{
+  "id": "procedure_learning",
+  "name": "Procedure Learning",
+  "version": "1.0.0",
+  "author": "IdentityOS",
+  "license": "MIT",
+  "homepage": "https://github.com/lacebx/IdentityOS",
+  "description": "Generalize verified multi-step tasks and promote them against protected held-out examples.",
+  "provider": "core.capabilities.procedure_learning.ProcedureLearningCapability",
+  "config_schema": {
+    "type": "object",
+    "properties": {}
+  },
+  "permissions": {
+    "network": false,
+    "filesystem": false
+  },
+  "skills": [
+    {
+      "name": "procedure_learning.list",
+      "description": "List learned procedures and promoted held-out scores",
+      "permission": "public"
+    },
+    {
+      "name": "procedure_learning.learn",
+      "description": "Learn from a verified task using a protected held-out suite",
+      "permission": "procedure:learn"
+    }
+  ]
+}

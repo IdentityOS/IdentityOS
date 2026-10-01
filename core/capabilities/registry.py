@@ -4,6 +4,8 @@ import re
 import time
 from typing import Any, Optional
 
+from core.channels.context import authorize_skill, current_channel
+
 from .base import Capability, Skill
 from .contracts import (
     CapabilityContractError,
@@ -67,7 +69,7 @@ class CapabilityRegistry:
                 cap_id = entry["id"]
                 config = entry.get("config", {})
                 try:
-                    cls = lookup(cap_id)
+                    cls = self._resolve_class(identity_id, cap_id)
                     inst = cls(config=config)
                     inst.install(identity_id, self._storage)
                     for permission in inst.default_grants:
@@ -91,7 +93,7 @@ class CapabilityRegistry:
     def install(
         self, identity_id: str, cap_id: str, config: Optional[dict] = None
     ) -> Capability:
-        cls = lookup(cap_id)
+        cls = self._resolve_class(identity_id, cap_id)
         cap = cls(config=config or {})
         cap.install(identity_id, self._storage)
         caps = self._load_identity_caps(identity_id)
@@ -100,6 +102,18 @@ class CapabilityRegistry:
         for permission in cap.default_grants:
             self.grant(identity_id, cap_id, permission)
         return cap
+
+    def _resolve_class(self, identity_id: str, cap_id: str) -> type[Capability]:
+        """Prefer an identity's content-verified portable package when present."""
+        try:
+            from core.skill_forge.loader import persisted_capability_class
+
+            forged = persisted_capability_class(self._storage, identity_id, cap_id)
+            if forged is not None:
+                return forged
+        except ImportError:
+            pass
+        return lookup(cap_id)
 
     def uninstall(self, identity_id: str, cap_id: str) -> None:
         caps = self._load_identity_caps(identity_id)
@@ -118,7 +132,8 @@ class CapabilityRegistry:
     def all_prompts(self, identity_id: str) -> list[str]:
         prompts: list[str] = []
         for cap in self.list(identity_id):
-            prompts.extend(cap.prompts(identity_id))
+            if current_channel.get() is None or any(authorize_skill(skill.name)[0] for skill in cap.skills()):
+                prompts.extend(cap.prompts(identity_id))
         return prompts
 
     def all_skills(self, identity_id: str) -> list[Skill]:
@@ -152,7 +167,7 @@ class CapabilityRegistry:
         for cap in self.list(identity_id):
             for skill in cap.skills():
                 allowed, _ = self._authorized(identity_id, cap.id, skill.permission)
-                if not allowed:
+                if not allowed or not authorize_skill(skill.name)[0]:
                     continue
                 safe_name = skill.name.replace(".", "__")
                 catalog.append((skill.tool_definition(name=safe_name), safe_name, skill.name))
@@ -184,6 +199,9 @@ class CapabilityRegistry:
         return definitions, mapping
 
     def can(self, identity_id: str, skill_name: str) -> tuple[bool, str]:
+        allowed, reason = authorize_skill(skill_name)
+        if not allowed:
+            return allowed, reason
         for cap in self.list(identity_id):
             skill = next((s for s in cap.skills() if s.name == skill_name), None)
             if skill is not None:
@@ -216,6 +234,9 @@ class CapabilityRegistry:
                 reason,
                 params=params,
             )
+        channel_allowed, channel_reason = authorize_skill(skill_name)
+        if not channel_allowed:
+            return CapabilityResult.fail(cap.id, skill_name, "channel_denied", channel_reason)
         normalized_params = normalize_parameters(skill.input_schema, params)
         try:
             validate_parameters(skill.input_schema, normalized_params)

@@ -22,7 +22,14 @@ from core.executive.executor import (
     replay_policy_for_action,
     rollback_acquisition,
 )
-from core.executive.models import Evidence, Task, TaskStatus, TaskStep, TaskStepStatus
+from core.executive.models import (
+    Evidence,
+    ReplayPolicy,
+    Task,
+    TaskStatus,
+    TaskStep,
+    TaskStepStatus,
+)
 from core.executive.progress import compute_progress, render_progress_block
 from core.executive.recovery import recover_tasks
 from core.executive.scheduler import TaskScheduler
@@ -61,9 +68,13 @@ class ExecutiveRuntime:
         capability_registry: Any = None,
         *,
         autostart: bool = False,
+        skill_forge: Any = None,
+        embodiment_hub: Any = None,
     ) -> None:
         self.storage = storage
         self.capability_registry = capability_registry
+        self.skill_forge = skill_forge
+        self.embodiment_hub = embodiment_hub
         self.store = TaskStore(storage)
         self._ctx_cache: dict[str, ExecutionContext] = {}
         self.scheduler = TaskScheduler(self)
@@ -83,10 +94,13 @@ class ExecutiveRuntime:
                 capability_registry=self.capability_registry,
                 storage=self.storage,
                 runtime=runtime,
+                skill_forge=self.skill_forge,
+                embodiment_hub=self.embodiment_hub,
             )
         else:
             if runtime is not None:
                 self._ctx_cache[identity_id].runtime = runtime
+            self._ctx_cache[identity_id].embodiment_hub = self.embodiment_hub
         return self._ctx_cache[identity_id]
 
     # ── Task lifecycle API ────────────────────────────────────────────
@@ -232,6 +246,10 @@ class ExecutiveRuntime:
             raise TypeError(f"Invalid step definition: {type(s).__name__}")
         if step.replay_policy is None:
             step.replay_policy = replay_policy_for_action(step.action)
+        if step.replay_policy == ReplayPolicy.BLOCK:
+            # A non-replay-safe effect gets one automatic attempt. If its
+            # outcome is unknown, only explicit reconciliation may continue it.
+            step.max_retries = 1
         return step
 
     def get_task(self, identity_id: str, task_id: str) -> Optional[Task]:
@@ -274,11 +292,14 @@ class ExecutiveRuntime:
                 if step.status == TaskStepStatus.BLOCKED
             ]
             if any(
-                step.result.get("block_type") != "authorization_required"
+                not (
+                    step.result.get("resumable")
+                    or step.result.get("block_type") == "authorization_required"
+                )
                 for step in blocked_steps
             ):
                 raise IllegalTransition(
-                    "Task has an interrupted step with an unknown outcome; use "
+                    "Task has a non-resumable or outcome-unknown step; use "
                     "resolve_interrupted_step before resuming"
                 )
             for step in blocked_steps:

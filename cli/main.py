@@ -1030,6 +1030,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # create
+    from cli.phone import add_parser as add_phone_parser
+    add_phone_parser(sub)
+
     p_create = sub.add_parser("create", help="Create a new identity")
     p_create.add_argument("--id", default=None, help="Custom identity id (auto-generated if omitted)")
     p_create.add_argument("--name", required=True, help="Human-readable name")
@@ -1255,6 +1258,9 @@ COMMAND_MAP = {
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "phone":
+        from cli.phone import run
+        return run(args)
     handler = COMMAND_MAP.get(args.command)
     if handler is None:
         parser.print_help()

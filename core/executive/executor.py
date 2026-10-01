@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from core.executive.models import Evidence, ReplayPolicy, Task, TaskStep
-from core.executive.templates import capability_module
 from core.executive.verification import (
     capability_module_path,
     verification_probe,
@@ -34,6 +34,8 @@ class ExecutionContext:
     capability_registry: Any
     storage: Any
     runtime: Any = None
+    skill_forge: Any = None
+    embodiment_hub: Any = None
 
 
 class StepError(Exception):
@@ -156,6 +158,8 @@ def _trust(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dic
             permissions=manifest.get("permissions", {}),
             dependencies=manifest.get("dependencies", []),
             manifest_url=f"registry/capabilities/{cap}/manifest.json",
+            behaviorally_verified=bool(manifest.get("behaviorally_verified")),
+            artifact_sha256=manifest.get("artifact_sha256"),
         )
         score = verify_trust(candidate, mode=AcquisitionMode.AUTOMATIC)
         trusted = is_trusted(candidate, mode=AcquisitionMode.AUTOMATIC)
@@ -205,27 +209,73 @@ def _dependencies(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bo
 def _generate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
     cap = step.params.get("capability", "")
     path = capability_module_path(cap)
+    if path.exists():
+        return (False, {"path": str(path), "conflict": True}, [Evidence(
+            step=step.action,
+            label="generation_blocked_existing_source",
+            detail=f"refusing to overwrite existing capability source: {path}",
+            success=False,
+            data={"path": str(path), "conflict": True},
+        )])
+    forge = ctx.skill_forge or getattr(ctx.runtime, "skill_forge", None)
+    if forge is None:
+        return (False, {"forge_unavailable": True}, [Evidence(
+            step=step.action,
+            label="skill_forge_unavailable",
+            detail="no Skill Forge author and independent test designer are configured",
+            success=False,
+            data={"capability": cap},
+        )])
     try:
-        if path.exists():
-            return (False, {"path": str(path), "conflict": True}, [Evidence(
+        from core.skill_forge import ForgeRequest
+
+        identity = ctx.runtime.load(ctx.identity_id) if ctx.runtime is not None else None
+        result = forge.forge(ForgeRequest(
+            capability_id=cap,
+            goal=task.original_request or task.goal,
+            identity_id=ctx.identity_id,
+            allowed_permissions=tuple(step.params.get("allowed_permissions", [])),
+            allowed_dependencies=tuple(step.params.get("allowed_dependencies", [])),
+        ), identity=identity)
+        report = result.isolation_report
+        evidence = [
+            Evidence(
                 step=step.action,
-                label="generation_blocked_existing_source",
-                detail=f"refusing to overwrite existing capability source: {path}",
-                success=False,
-                data={"path": str(path), "conflict": True},
-            )])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(capability_module(cap), encoding="utf-8")
-        evidence = [Evidence(
-            step=step.action, label="file_generated",
-            detail=f"wrote {path} ({path.stat().st_size} bytes)", success=True,
-            data={"path": str(path), "bytes": path.stat().st_size},
-        )]
-        return (True, {"path": str(path)}, evidence)
-    except Exception as e:
+                label="behavioral_tests_isolated",
+                detail=f"{report.get('case_count', 0)} independent cases passed in a clean subprocess",
+                success=bool(report.get("passed")),
+                data={
+                    "case_count": report.get("case_count", 0),
+                    "duration_ms": report.get("duration_ms"),
+                    "exit_code": report.get("exit_code"),
+                },
+            ),
+            Evidence(
+                step=step.action,
+                label="artifact_packaged",
+                detail=f"packaged tested bytes as {result.artifact_path}",
+                success=True,
+                data={
+                    "artifact_path": result.artifact_path,
+                    "artifact_sha256": result.artifact_sha256,
+                },
+            ),
+            Evidence(
+                step=step.action,
+                label="file_generated",
+                detail=f"wrote tested source {result.source_path} ({path.stat().st_size} bytes)",
+                success=True,
+                data={"path": result.source_path, "bytes": path.stat().st_size},
+            ),
+        ]
+        return (True, result.to_dict(), evidence)
+    except Exception as exc:
         return (False, {}, [Evidence(
-            step=step.action, label="file_generated",
-            detail=f"failed to generate: {e}", success=False, data={"error": str(e)},
+            step=step.action,
+            label="skill_forge_failed",
+            detail=f"forge failed: {type(exc).__name__}: {exc}",
+            success=False,
+            data={"capability": cap, "error": str(exc)},
         )])
 
 
@@ -257,19 +307,44 @@ def _publish(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, d
     cap = step.params.get("capability", "")
     try:
         from core.capabilities.registry import lookup
+        generated = task.step_by_id("generate")
+        generated_result = generated.result if generated is not None else {}
+        generated_manifest = generated_result.get("manifest", {})
         rmgmt = lookup("registry_manager")()
         res = rmgmt.call(
             "registry_manager.publish_capability",
             cap_id=cap,
-            name=cap.replace("_", " ").title(),
-            version="1.0.0",
-            description=f"Generic capability: {cap}",
+            name=generated_manifest.get("name", cap.replace("_", " ").title()),
+            version=generated_manifest.get("version", "1.0.0"),
+            description=generated_manifest.get("description", f"Forged capability: {cap}"),
+            skills=generated_manifest.get("skills", []),
         )
         success = bool(getattr(res, "success", False)) or "published" in str(getattr(res, "data", {}))
+        artifact_destination = None
+        artifact_source = generated_result.get("artifact_path")
+        if success and artifact_source:
+            artifact_destination = _REPO_ROOT / "registry" / "capabilities" / cap / "capability.idcap"
+            shutil.copyfile(artifact_source, artifact_destination)
+            manifest_path = artifact_destination.parent / "manifest.json"
+            published_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            published_manifest["dependencies"] = generated_manifest.get("dependencies", [])
+            published_manifest["forge_permissions"] = generated_manifest.get("permissions", [])
+            published_manifest["artifact"] = "capability.idcap"
+            published_manifest["artifact_sha256"] = generated_result.get("artifact_sha256")
+            published_manifest["behaviorally_verified"] = True
+            manifest_path.write_text(json.dumps(published_manifest, indent=2) + "\n", encoding="utf-8")
         evidence = [Evidence(
             step=step.action, label="registry_published",
             detail=f"{cap} published ({getattr(res, 'data', {})})", success=success,
-            data=getattr(res, "data", {}) if isinstance(getattr(res, "data", {}), dict) else {"result": str(getattr(res, "data", ""))},
+            data={
+                **(
+                    getattr(res, "data", {})
+                    if isinstance(getattr(res, "data", {}), dict)
+                    else {"result": str(getattr(res, "data", ""))}
+                ),
+                "artifact": str(artifact_destination) if artifact_destination else None,
+                "artifact_sha256": generated_result.get("artifact_sha256"),
+            },
         )]
         return (success, {"published": success}, evidence)
     except Exception as e:
@@ -363,6 +438,7 @@ def _activate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, 
     if not allowed:
         return (False, {
             "blocked": True,
+            "resumable": True,
             "block_type": "authorization_required",
             "activated": False,
             "capability": cap_id,
@@ -571,70 +647,156 @@ def _verify_goal(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[boo
         return (True, {"retried": False, "error": str(e)}, [Evidence(step=step.action, label="goal_retry", detail=f"retry unavailable: {e}", success=False, data={"error": str(e)})])
 
 
-# ── Planner file-action passthrough handlers ─────────────────────────────
-
-def _passthrough_file_tools(action: str):
-    def handler(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
-        try:
-            from core.capabilities.registry import lookup
-            res = lookup("file_tools")().call(f"file_tools.{action}", **step.params)
-            ok = bool(getattr(res, "success", False))
-            data = getattr(res, "data", {})
-            ev = [Evidence(step=step.action, label=action, detail=f"{action} ok" if ok else f"{action} failed", success=ok, data=data if isinstance(data, dict) else {})]
-            return (ok, data if isinstance(data, dict) else {"result": str(data)}, ev)
-        except Exception as e:
-            return (False, {}, [Evidence(step=step.action, label=action, detail=f"{action} failed: {e}", success=False, data={"error": str(e)})])
-    return handler
-
-
-def _passthrough_validator(action: str):
-    def handler(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
-        try:
-            from core.capabilities.registry import lookup
-            skill = "skill_validator.validate_syntax" if action == "validate_syntax" else "skill_validator.check_capability_interface"
-            res = lookup("skill_validator")().call(skill, **step.params)
-            ok = bool(getattr(res, "success", False))
-            data = getattr(res, "data", {})
-            ev = [Evidence(step=step.action, label=action, detail="validated" if ok else "validation failed", success=ok, data=data if isinstance(data, dict) else {})]
-            return (ok, data if isinstance(data, dict) else {"result": str(data)}, ev)
-        except Exception as e:
-            return (False, {}, [Evidence(step=step.action, label=action, detail=f"{action} failed: {e}", success=False, data={"error": str(e)})])
-    return handler
-
-
-def _passthrough_registry(action: str):
-    def handler(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
-        try:
-            from core.capabilities.registry import lookup
-            skill = {
-                "list_capabilities": "registry_manager.list_capabilities",
-                "publish_capability": "registry_manager.publish_capability",
-                "install_capability": "registry_manager.install_capability",
-            }[action]
-            res = lookup("registry_manager")().call(skill, **step.params)
-            ok = bool(getattr(res, "success", False))
-            data = getattr(res, "data", {})
-            ev = [Evidence(step=step.action, label=action, detail=f"{action} ok" if ok else f"{action} failed", success=ok, data=data if isinstance(data, dict) else {})]
-            return (ok, data if isinstance(data, dict) else {"result": str(data)}, ev)
-        except Exception as e:
-            return (False, {}, [Evidence(step=step.action, label=action, detail=f"{action} failed: {e}", success=False, data={"error": str(e)})])
-    return handler
-
-
-def _passthrough_command(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
+def _device_action(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
+    """Route an authorized device action through the runtime's embodiment hub."""
+    hub = ctx.embodiment_hub or getattr(ctx.runtime, "embodiment_hub", None)
+    if hub is None:
+        return (False, {
+            "blocked": True,
+            "resumable": True,
+            "block_type": "device_unavailable",
+            "reason": "embodiment hub is unavailable",
+        }, [Evidence(
+            step=step.action,
+            label="device_unavailable",
+            detail="embodiment hub is unavailable",
+            success=False,
+        )])
+    device_id = str(step.params.get("device_id", ""))
+    action = str(step.params.get("device_action", ""))
+    params = step.params.get("device_params", {})
     try:
-        from core.capabilities.registry import lookup
-        import importlib
-        cap = step.params.get("cap_id", "command_exec")
-        cmd = step.params.get("command", "")
-        importlib.import_module(f"core.capabilities.{cap}")
-        res = lookup(cap)().call(f"{cap}.run", command=cmd)
-        ok = bool(getattr(res, "success", False))
-        data = getattr(res, "data", {})
-        ev = [Evidence(step=step.action, label="command_run", detail=f"exit={data.get('exit_code')}" if isinstance(data, dict) else "ran", success=ok, data=data if isinstance(data, dict) else {})]
-        return (ok, data if isinstance(data, dict) else {"result": str(data)}, ev)
-    except Exception as e:
-        return (False, {}, [Evidence(step=step.action, label="command_run", detail=f"command failed: {e}", success=False, data={"error": str(e)})])
+        observation = hub.invoke(
+            ctx.identity_id, task.task_id, device_id, action, params,
+        )
+        ok = bool(observation.get("success"))
+        return (ok, observation, [Evidence(
+            step=step.action,
+            label="device_observation",
+            detail=(
+                f"observed {device_id}.{action} via {observation.get('source') or 'device adapter'}"
+                if ok else f"{device_id}.{action} reported failure: {observation.get('error') or 'unknown'}"
+            ),
+            success=ok,
+            data=observation,
+        )])
+    except Exception as exc:
+        from core.embodiment import DeviceAuthorizationError, DeviceUnavailableError
+
+        if isinstance(exc, (DeviceAuthorizationError, DeviceUnavailableError)):
+            block_type = (
+                "authorization_required"
+                if isinstance(exc, DeviceAuthorizationError)
+                else "device_unavailable"
+            )
+            return (False, {
+                "blocked": True,
+                "resumable": True,
+                "block_type": block_type,
+                "reason": str(exc),
+                "device_id": device_id,
+                "device_action": action,
+            }, [Evidence(
+                step=step.action,
+                label=block_type,
+                detail=str(exc),
+                success=False,
+                data={"device_id": device_id, "device_action": action},
+            )])
+        return (False, {
+            "device_id": device_id,
+            "device_action": action,
+            "error": str(exc),
+        }, [Evidence(
+            step=step.action,
+            label="device_execution_failed",
+            detail=f"{device_id}.{action} failed: {exc}",
+            success=False,
+            data={"device_id": device_id, "device_action": action},
+        )])
+
+
+# ── Planner capability-action handlers ────────────────────────────
+
+_ACTION_SKILLS = {
+    "create_directory": "file_tools.create_directory",
+    "write_file": "file_tools.write_file",
+    "append_file": "file_tools.append_file",
+    "validate_syntax": "skill_validator.validate_syntax",
+    "check_interface": "skill_validator.check_capability_interface",
+    "list_capabilities": "registry_manager.list_capabilities",
+    "publish_capability": "registry_manager.publish_capability",
+    "install_capability": "registry_manager.install_capability",
+}
+
+
+def capability_skill_for_action(action: str, params: Optional[dict] = None) -> Optional[str]:
+    """Resolve a planner action to its gateway-enforced skill contract."""
+    if action == "run_command":
+        cap_id = str((params or {}).get("cap_id", "command_exec"))
+        return f"{cap_id}.run"
+    return _ACTION_SKILLS.get(action)
+
+
+def _gateway_action(action: str):
+    def handler(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
+        skill = capability_skill_for_action(action, step.params)
+        if skill is None or ctx.capability_registry is None:
+            reason = (
+                f"no capability mapping for {action}"
+                if skill is None else "capability registry unavailable"
+            )
+            return (False, {}, [Evidence(
+                step=step.action, label=action, detail=reason, success=False,
+            )])
+
+        params = dict(step.params)
+        params.pop("cap_id", None)
+        try:
+            res = ctx.capability_registry.call(
+                ctx.identity_id,
+                skill,
+                execution_scope=f"task:{task.task_id}",
+                **params,
+            )
+            ok = bool(getattr(res, "success", False))
+            raw_data = getattr(res, "data", {})
+            data = raw_data if isinstance(raw_data, dict) else {"result": str(raw_data)}
+            error = getattr(res, "error", None) or {}
+            error_type = error.get("type", "") if isinstance(error, dict) else ""
+            error_message = error.get("message", str(error)) if error else ""
+            evidence = [Evidence(
+                step=step.action,
+                label=action,
+                detail=(
+                    f"{skill} succeeded"
+                    if ok else f"{skill} failed: {error_message or 'unknown error'}"
+                ),
+                success=ok,
+                data={
+                    **data,
+                    "skill": skill,
+                    **({"error_type": error_type} if error_type else {}),
+                },
+            )]
+            if error_type == "permission_denied":
+                return (False, {
+                    "blocked": True,
+                    "resumable": True,
+                    "block_type": "authorization_required",
+                    "reason": error_message,
+                    "skill": skill,
+                }, evidence)
+            return (ok, data, evidence)
+        except Exception as exc:
+            return (False, {"skill": skill, "error": str(exc)}, [Evidence(
+                step=step.action,
+                label=action,
+                detail=f"{skill} failed: {exc}",
+                success=False,
+                data={"skill": skill, "error": str(exc)},
+            )])
+    return handler
 
 
 _HANDLERS: dict[str, Any] = {
@@ -652,16 +814,18 @@ _HANDLERS: dict[str, Any] = {
     "reuse": _reuse,
     "verify": _verify,
     "verify_goal": _verify_goal,
-    # planner passthrough
-    "create_directory": _passthrough_file_tools("create_directory"),
-    "write_file": _passthrough_file_tools("write_file"),
-    "append_file": _passthrough_file_tools("append_file"),
-    "validate_syntax": _passthrough_validator("validate_syntax"),
-    "check_interface": _passthrough_validator("check_interface"),
-    "list_capabilities": _passthrough_registry("list_capabilities"),
-    "publish_capability": _passthrough_registry("publish_capability"),
-    "install_capability": _passthrough_registry("install_capability"),
-    "run_command": _passthrough_command,
+    "device_action": _device_action,
+    # Planner actions execute through the same install/permission/schema
+    # gateway as model-originated capability calls.
+    "create_directory": _gateway_action("create_directory"),
+    "write_file": _gateway_action("write_file"),
+    "append_file": _gateway_action("append_file"),
+    "validate_syntax": _gateway_action("validate_syntax"),
+    "check_interface": _gateway_action("check_interface"),
+    "list_capabilities": _gateway_action("list_capabilities"),
+    "publish_capability": _gateway_action("publish_capability"),
+    "install_capability": _gateway_action("install_capability"),
+    "run_command": _gateway_action("run_command"),
 }
 
 

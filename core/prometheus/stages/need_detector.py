@@ -70,6 +70,46 @@ _RESPONSE_GAP_PATTERNS = [
     re.compile(r"(?:you need to install|please install|install the|try installing)", re.IGNORECASE),
 ]
 
+_ABILITY_REQUEST_PATTERNS = [
+    re.compile(
+        r"\b(?:i\s+)?(?:would\s+like|want|need)\s+(?:you\s+)?to\s+be\s+able\s+to\s+([^.!?]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:give|add)\s+(?:you|the\s+identity)\s+(?:an?\s+)?(?:ability|capability)\s+to\s+([^.!?]+)",
+        re.IGNORECASE,
+    ),
+]
+
+_ABILITY_STOPWORDS = {
+    "a", "an", "and", "as", "at", "be", "for", "from", "i", "in", "it",
+    "me", "my", "of", "on", "or", "the", "to", "with", "you", "your",
+}
+
+
+def infer_requested_capability_id(text: str) -> Optional[str]:
+    """Infer a stable slug only from explicit requests for a missing ability.
+
+    This is capability-agnostic: it does not map domains such as speech or OCR
+    to special implementations.  The behavioral goal remains the full user
+    request and Skill Forge is responsible for proving the resulting behavior.
+    """
+    for pattern in _ABILITY_REQUEST_PATTERNS:
+        match = pattern.search(text or "")
+        if not match:
+            continue
+        words = [
+            word
+            for word in re.findall(r"[a-z0-9]+", match.group(1).lower())
+            if word not in _ABILITY_STOPWORDS
+        ]
+        if not words:
+            return None
+        slug = "_".join(words[:5])[:63].rstrip("_")
+        if len(slug) >= 2 and slug[0].isalpha():
+            return slug
+    return None
+
 
 def detect_need_from_input(user_input: str) -> Optional[CapabilityNeed]:
     input_lower = user_input.lower()
@@ -84,7 +124,11 @@ def detect_need_from_input(user_input: str) -> Optional[CapabilityNeed]:
                     suggested_cap_ids.append(cap_id)
 
     if not suggested_cap_ids:
-        return None
+        inferred = infer_requested_capability_id(user_input)
+        if inferred is None:
+            return None
+        suggested_cap_ids.append(inferred)
+        matched_keywords.append(inferred.replace("_", " "))
 
     return CapabilityNeed(
         skill_keywords=matched_keywords,
@@ -119,7 +163,11 @@ def detect_need_from_response(
         suggest_from_request = detect_need_from_input(original_request)
         if suggest_from_request:
             return suggest_from_request
-        return None
+        inferred = infer_requested_capability_id(original_request)
+        if inferred is None:
+            return None
+        suggested_cap_ids.append(inferred)
+        matched_keywords.append(inferred.replace("_", " "))
 
     return CapabilityNeed(
         skill_keywords=matched_keywords,

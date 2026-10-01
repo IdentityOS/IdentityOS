@@ -53,7 +53,7 @@ def _install_marketplace(
 
 def test_marketplace_only_advertises_registered_conformant_capabilities():
     entries = _marketplace_entries()
-    assert len(entries) == 19
+    assert len(entries) == 22
     assert len({entry["id"] for entry in entries}) == len(entries)
 
     for entry in entries:
@@ -245,6 +245,69 @@ def test_every_local_marketplace_skill_executes_through_gateway(tmp_path):
     assert registry_manager is not None
     registry_manager._registry_path = lambda: str(registry_root)  # type: ignore[method-assign]
 
+    from core.embodiment import CapabilityDeviceAdapter, EmbodimentHub
+    from core.executive.engine import ExecutiveRuntime, register_executive
+    from core.executive.models import Evidence, Task, TaskStatus, TaskStep, TaskStepStatus
+    from core.procedures import HeldOutExample, ProcedureLearner
+
+    executive = ExecutiveRuntime(storage=registry._storage, capability_registry=registry)
+    register_executive(executive)
+    embodiment_hub = EmbodimentHub(registry._storage, executive)
+    executive.embodiment_hub = embodiment_hub
+    embodiment_hub.attach(CapabilityDeviceAdapter(
+        registry,
+        "command_exec",
+        device_id="conformance_desktop",
+        kind="desktop",
+        actions=["run"],
+    ))
+    embodiment_hub.authorize(identity_id, "conformance_desktop", ["run"])
+    procedure_task = Task(
+        task_id="conformance-procedure-task",
+        goal="write and validate",
+        identity_id=identity_id,
+        status=TaskStatus.COMPLETED,
+        steps=[
+            TaskStep(
+                action="write_file",
+                description="Write",
+                params={"path": str(workspace / "training.py"), "content": "answer = 1"},
+                status=TaskStepStatus.COMPLETED,
+                evidence=[Evidence("write_file", "written", "observed", True)],
+            ),
+            TaskStep(
+                action="validate_syntax",
+                description="Validate",
+                params={"path": str(workspace / "training.py")},
+                status=TaskStepStatus.COMPLETED,
+                evidence=[Evidence("validate_syntax", "valid", "observed", True)],
+            ),
+        ],
+    )
+    executive.store.save(procedure_task)
+    ProcedureLearner(registry._storage).register_held_out_suite(
+        identity_id,
+        "conformance-suite",
+        [
+            HeldOutExample(
+                "case-one",
+                {"path": str(workspace / "one.py"), "content": "answer = 2"},
+                (
+                    {"action": "write_file", "params": {"path": str(workspace / "one.py"), "content": "answer = 2"}},
+                    {"action": "validate_syntax", "params": {"path": str(workspace / "one.py")}},
+                ),
+            ),
+            HeldOutExample(
+                "case-two",
+                {"path": str(workspace / "two.py"), "content": "answer = 3"},
+                (
+                    {"action": "write_file", "params": {"path": str(workspace / "two.py"), "content": "answer = 3"}},
+                    {"action": "validate_syntax", "params": {"path": str(workspace / "two.py")}},
+                ),
+            ),
+        ],
+    )
+
     generated_interface = """
 class DemoCapability(Capability):
     id = "demo"
@@ -308,6 +371,36 @@ class DemoCapability(Capability):
         "registry_manager.install_capability": {"cap_id": "verified_demo"},
         "task_planner.plan_and_execute": {"goal": "list capabilities", "steps": [{"action": "list_capabilities", "params": {}, "description": "List capabilities"}]},
         "command_exec.run": {"command": "true", "timeout": 5},
+        "procedure_learning.list": {},
+        "procedure_learning.learn": {
+            "task_id": procedure_task.task_id,
+            "procedure_id": "conformance_writer",
+            "bindings": {
+                "path": str(workspace / "training.py"),
+                "content": "answer = 1",
+            },
+            "held_out_suite_id": "conformance-suite",
+        },
+        "reflex.list": {},
+        "reflex.register": {
+            "reflex_id": "conformance_reflex",
+            "procedure_id": "conformance_writer",
+            "trigger_template": "write {content} to {path}",
+        },
+        "reflex.execute": {
+            "utterance": f"write answer = 4 to {workspace / 'reflex.py'}",
+        },
+        "reflex.reconcile": {"run_id": "filled-after-dispatch"},
+        "embodiment.list_devices": {},
+        "embodiment.start_task": {
+            "goal": "execute a conformance command on the authorized desktop",
+            "steps": [{
+                "device_id": "conformance_desktop",
+                "action": "run",
+                "params": {"command": "/bin/true", "timeout": 5},
+            }],
+        },
+        "embodiment.task_status": {"task_id": "filled-after-start"},
     }
     expected_skills = {
         skill.name
@@ -318,14 +411,32 @@ class DemoCapability(Capability):
     assert set(invocations) == expected_skills
 
     failures = {}
+    reflex_run_id = None
+    embodiment_task_id = None
     for skill_name, params in invocations.items():
+        if skill_name == "reflex.reconcile":
+            assert reflex_run_id is not None
+            params = {"run_id": reflex_run_id}
+        if skill_name == "embodiment.task_status":
+            assert embodiment_task_id is not None
+            for _ in range(20):
+                executive.process_ready(identity_id, max_steps=10)
+                if executive.get_task(identity_id, embodiment_task_id).status.value == "completed":
+                    break
+            params = {"task_id": embodiment_task_id}
         result = registry.call(identity_id, skill_name, **params)
+        if skill_name == "reflex.execute" and result.success:
+            reflex_run_id = result.data["run_id"]
+        if skill_name == "embodiment.start_task" and result.success:
+            embodiment_task_id = result.data["task_id"]
         if not result.success:
             failures[skill_name] = result.error
         assert result.data is not None
     assert failures == {}
     assert write_target.read_text() == "first second"
     assert directory_target.is_dir()
+    assert executive.get_task(identity_id, embodiment_task_id).status.value == "completed"
+    executive.shutdown()
 
 
 @pytest.mark.network

@@ -104,6 +104,8 @@ def search_registry(
                 dependencies=manifest.get("dependencies", []),
                 manifest_url=entry.get("url", ""),
                 relevance_score=round(relevance, 3),
+                behaviorally_verified=bool(manifest.get("behaviorally_verified")),
+                artifact_sha256=manifest.get("artifact_sha256"),
             )
             candidates.append(candidate)
 

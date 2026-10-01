@@ -365,7 +365,7 @@ List all available capabilities:
 
 ```bash
 identity cap list
-#   19 capabilities available
+#   <current marketplace count> capabilities available
 #
 #   datetime             v1.0.0  Current date/time awareness
 #   filesystem           v1.0.0  Read/write files on local system

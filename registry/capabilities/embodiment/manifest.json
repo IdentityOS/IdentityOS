@@ -1,0 +1,36 @@
+{
+  "id": "embodiment",
+  "name": "Cross-Device Embodiment",
+  "version": "1.0.0",
+  "author": "IdentityOS",
+  "license": "MIT",
+  "homepage": "https://github.com/lacebx/IdentityOS",
+  "description": "Use host-authorized cameras, voice, browsers, and desktops in one durable task.",
+  "provider": "core.capabilities.embodiment.EmbodimentCapability",
+  "config_schema": {
+    "type": "object",
+    "properties": {}
+  },
+  "permissions": {
+    "network": false,
+    "filesystem": false,
+    "devices": true
+  },
+  "skills": [
+    {
+      "name": "embodiment.list_devices",
+      "description": "List authorized devices and their current attachment state",
+      "permission": "public"
+    },
+    {
+      "name": "embodiment.start_task",
+      "description": "Start one durable task across authorized device actions",
+      "permission": "embodiment:execute"
+    },
+    {
+      "name": "embodiment.task_status",
+      "description": "Read status and evidence counts for a cross-device task",
+      "permission": "public"
+    }
+  ]
+}

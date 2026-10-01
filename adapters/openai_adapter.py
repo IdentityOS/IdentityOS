@@ -410,13 +410,14 @@ class OpenAIAdapter(BaseAdapter):
     def _get_client(self):
         if self._client is None:
             try:
-                import httpx
-                from openai import OpenAI
+                from openai import OpenAI, Timeout
                 self._client = OpenAI(
                     api_key=self.api_key,
                     base_url=self.base_url,
                     organization=self.organization,
-                    timeout=httpx.Timeout(timeout=self.timeout, connect=5.0),
+                    # Use the SDK's public type: newer SDKs can use a different
+                    # HTTP transport than the project's direct httpx dependency.
+                    timeout=Timeout(timeout=self.timeout, connect=5.0),
                     # Retry policy lives in ``generate`` and provider-specific
                     # adapters. SDK retries would multiply the configured
                     # timeout and make fallback latency unpredictable.
