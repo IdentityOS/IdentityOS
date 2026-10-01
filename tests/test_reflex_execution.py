@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -256,25 +256,53 @@ def test_runtime_exact_match_skips_adapter_but_nonmatch_uses_it(tmp_path):
     runtime.shutdown()
 
 
-def test_benchmark_measures_both_planners_and_checks_plan_equivalence(tmp_path):
+@pytest.mark.parametrize("reflex_seconds,planner_seconds,improved", [
+    (0.001, 0.010, True),
+    (0.020, 0.010, False),
+])
+def test_benchmark_measures_both_planners_and_checks_plan_equivalence(
+    tmp_path, monkeypatch, reflex_seconds, planner_seconds, improved,
+):
     _, _, executive, engine, binding, workspace = _setup(tmp_path)
     utterance = f"write measured = True to {workspace / 'measured.py'}"
     expected = engine.prepare(binding.identity_id, utterance)["steps"]
 
-    def slower_planner(_utterance):
-        time.sleep(0.01)
+    # Exercise both real planning paths while controlling the benchmark clock.
+    # Host load must not turn this reporting test into a performance gate.
+    clock = [0.0]
+    monkeypatch.setattr(
+        "core.reflexes.engine.time", SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+    real_prepare = engine.prepare
+    prepare_calls = []
+    planner_calls = []
+
+    def measured_prepare(identity_id, request):
+        prepare_calls.append(request)
+        result = real_prepare(identity_id, request)
+        clock[0] += reflex_seconds
+        return result
+
+    monkeypatch.setattr(engine, "prepare", measured_prepare)
+
+    def planner(request):
+        planner_calls.append(request)
+        clock[0] += planner_seconds
         return expected
 
     report = engine.benchmark_planning(
         binding.identity_id,
         binding.reflex_id,
         utterance,
-        slower_planner,
+        planner,
         iterations=3,
     )
     assert report["correctness_preserved"] is True
-    assert report["latency_improved"] is True
-    assert report["reflex_median_ms"] < report["planner_median_ms"]
+    assert prepare_calls == [utterance] * 3
+    assert planner_calls == [utterance] * 3
+    assert report["latency_improved"] is improved
+    assert report["reflex_median_ms"] == pytest.approx(reflex_seconds * 1000)
+    assert report["planner_median_ms"] == pytest.approx(planner_seconds * 1000)
 
     executive.shutdown()
 
