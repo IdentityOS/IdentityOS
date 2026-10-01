@@ -23,9 +23,10 @@ from runtime.persistence import JSONFileBackend
 
 
 class FakeAdapter:
-    def __init__(self, model="default"):
+    def __init__(self, model="default", name="FakeAdapter", base_url=""):
         self.model = model
         self.temperature = 0.7
+        self.base_url = base_url
 
 
 class FakeMemoryStore:
@@ -85,15 +86,17 @@ class TestModelSwitching:
         _set_adapter_model(a, "openai/gpt-oss-120b")
         assert a.model == "openai/gpt-oss-120b"
 
-    def test_chain_adapter_model_switch_updates_all_leaf_adapters(self):
+    def test_chain_model_switch_updates_only_the_head(self):
+        """A model slug is provider-scoped: writing it into every leaf turns
+        cloud fallbacks into 404s (a local tag sent to Groq/Cerebras)."""
         from adapters import ChainAdapter
-        a = FakeAdapter("m1")
-        b = FakeAdapter("m2")
-        chain = ChainAdapter([a, b])
-        _set_adapter_model(chain, "openai/gpt-oss-120b")
-        assert a.model == "openai/gpt-oss-120b"
-        assert b.model == "openai/gpt-oss-120b"
-        assert chain.model == "openai/gpt-oss-120b"
+        head = FakeAdapter("m1", base_url="https://api.example.test")
+        tail = FakeAdapter("openai/gpt-oss-120b", base_url="https://api.groq.test")
+        chain = ChainAdapter([head, tail])
+        _set_adapter_model(chain, "phi4-mini:latest")
+        assert head.model == "phi4-mini:latest"
+        assert tail.model == "openai/gpt-oss-120b", "fallback leaves must keep their own model"
+        assert chain.model == "phi4-mini:latest"
 
     def test_temperature_switch(self):
         from adapters import ChainAdapter
@@ -114,7 +117,35 @@ class TestModelSwitching:
         status = _dispatch_chat_command("/model openai/gpt-oss-120b", ctx)
         assert status == "handled"
         assert ctx.runtime.adapter.model == "openai/gpt-oss-120b"
-        assert "Model switched" in capsys.readouterr().out
+        assert "Model set to openai/gpt-oss-120b" in capsys.readouterr().out
+
+    def test_dispatch_model_provider_name_switches_provider(self, capsys):
+        """`/model Nvidia` must call NVIDIA, not send model='Nvidia' to Groq."""
+        from adapters import ChainAdapter
+        groq = FakeAdapter("openai/gpt-oss-120b", base_url="https://api.groq.test")
+        nvidia = FakeAdapter("nvidia/llama-3.1-nemotron-70b-instruct",
+                             base_url="https://integrate.api.nvidia.test")
+        ctx = _make_ctx()
+        ctx.runtime.adapter = ChainAdapter([groq, nvidia])
+
+        status = _dispatch_chat_command("/model Nvidia", ctx)
+
+        assert status == "handled"
+        leaves = list(ctx.runtime.adapter._adapters)
+        assert leaves[0] is nvidia, "the named provider becomes the chain head"
+        assert groq.model == "openai/gpt-oss-120b", "other providers' models untouched"
+        assert ctx.runtime.adapter.model == "nvidia/llama-3.1-nemotron-70b-instruct"
+        assert "Switched provider" in capsys.readouterr().out
+
+    def test_dispatch_model_without_arg_lists_chain(self, capsys):
+        from adapters import ChainAdapter
+        ctx = _make_ctx()
+        ctx.runtime.adapter = ChainAdapter([
+            FakeAdapter("m1", base_url="https://a.test"),
+            FakeAdapter("m2", base_url="https://b.test"),
+        ])
+        assert _dispatch_chat_command("/model", ctx) == "handled"
+        assert "→" in capsys.readouterr().out
 
     def test_dispatch_temperature_valid_and_invalid(self, capsys):
         ctx = _make_ctx()

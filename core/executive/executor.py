@@ -799,7 +799,20 @@ def _gateway_action(action: str):
     return handler
 
 
+def _service_job(task, step, ctx):
+    from core.services.runtime import ServiceRuntime
+
+    services = getattr(ctx.runtime, 'services', None)
+    if not isinstance(services, ServiceRuntime):
+        raise StepError('service runtime binding unavailable')
+    job = services.work(services.bind(ctx.identity_id), step.params['job'])
+    return True, {'job':job['id'],'state':job['state']}, [Evidence(
+        step=step.action, label='service_delivery', detail=job['state'],
+        success=job['state'] in {'DELIVERED','COMPLETED'}, data={'job':job['id'],'artifact':job['artifact']})]
+
+
 _HANDLERS: dict[str, Any] = {
+    "service_job": _service_job,
     "registry_search": _registry_search,
     "trust": _trust,
     "dependencies": _dependencies,
@@ -833,6 +846,7 @@ _HANDLERS: dict[str, Any] = {
 # state when invoked repeatedly with the same parameters. Everything omitted
 # from this set is treated as outcome-unknown after an interrupted attempt.
 _REPLAY_POLICIES: dict[str, ReplayPolicy] = {
+    "service_job": ReplayPolicy.RETRY,  # bounded local format, atomic completion
     "registry_search": ReplayPolicy.RETRY,
     "trust": ReplayPolicy.RETRY,
     "dependencies": ReplayPolicy.RETRY,

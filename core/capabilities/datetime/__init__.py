@@ -26,6 +26,7 @@ _KNOWN_ZONES = {
 
 @register
 class DateTimeCapability(Capability):
+    inspection_readiness = "ready"
     id = "datetime"
     name = "DateTime"
     version = "1.1.0"

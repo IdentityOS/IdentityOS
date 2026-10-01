@@ -33,13 +33,14 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.network, pytest.mark.skipif(
     not os.environ.get("GROQ_API_KEY") and not os.environ.get("OPENROUTER_API_KEY"),
     reason="Requires GROQ_API_KEY or OPENROUTER_API_KEY for LLM access",
-)
+)]
 
 API_BASE = "http://localhost:8000"
 SERVER_WAIT = 5
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(scope="module")
@@ -62,7 +63,7 @@ def runtime_server():
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "runtime.main"],
-        cwd=str(repo_root),
+        cwd=str(REPO_ROOT),
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

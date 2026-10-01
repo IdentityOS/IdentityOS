@@ -25,6 +25,11 @@
       "name": "web.extract",
       "description": "Fetch a URL and extract clean text (strip HTML tags)",
       "permission": "public"
+    },
+    {
+      "name": "web.search",
+      "description": "Search the web and return ranked results (title, url, snippet)",
+      "permission": "network"
     }
   ]
 }

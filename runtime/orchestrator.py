@@ -1031,8 +1031,24 @@ class IdentityRuntime:
                 "duration_ms": _reflex_dispatch["timings_ms"]["total"],
                 "error": None,
             })
+        from core.self_knowledge import SelfKnowledge, needs_grounding, grounding_context, guard_response, SECTIONS, grounding_sections
+        _self_reader = SelfKnowledge(self._storage, identity.id) if self._storage else None
+        # Only attach sections relevant to the question: the full snapshot's
+        # capabilities inventory alone is ~4k tokens, which single-handedly
+        # pushed grounded chat turns past provider TPM limits.
+        _grounding_snapshot = (
+            _self_reader.snapshot(sections=grounding_sections(sanitized_input))
+            if _self_reader and needs_grounding(sanitized_input) else None
+        )
+        _grounding_metadata = None
+        if _grounding_snapshot is not None:
+            _tool_defs.append({"type":"function", "function":{
+                "name":"identity__self__inspect", "description":"Read sanitized authoritative self-state; no model or side effects",
+                "parameters":{"type":"object","properties":{"sections":{"type":"array","items":{"type":"string","enum":list(SECTIONS)}}},"additionalProperties":False}}})
+
 
         def _execute_tool_call(func_name: str, args: Any) -> str:
+            nonlocal _grounding_snapshot
             t0 = _time_mod.monotonic()
             if isinstance(args, str):
                 try:
@@ -1041,6 +1057,21 @@ class IdentityRuntime:
                     args = {}
             if not isinstance(args, dict):
                 args = {}
+
+            if func_name in ("identity__self__inspect", "identity.self.inspect") and _grounding_snapshot is not None:
+                if set(args) - {"sections"}:
+                    return json.dumps({"error":"self inspection cannot select another identity"})
+                try:
+                    requested = args.get("sections")
+                    if requested is not None and (not isinstance(requested, list) or any(x not in SECTIONS for x in requested)):
+                        raise ValueError('invalid sections')
+                    _grounding_snapshot = _self_reader.snapshot()
+                    view = dict(_grounding_snapshot)
+                    if requested is not None:
+                        view['sections'] = {name:view['sections'][name] for name in requested}
+                    return json.dumps(view)
+                except (ValueError, TypeError):
+                    return json.dumps({"error":"invalid self-state sections"})
 
             # Some models reproduce the canonical dotted skill name even
             # though providers require the offered ``__``-safe name. Resolve
@@ -1067,6 +1098,7 @@ class IdentityRuntime:
                     identity.id,
                     skill_name,
                     execution_scope=f"user:{user_id}",
+                    adapter=self.adapter,
                     **params,
                 )
                 duration_ms = (_time_mod.monotonic() - t0) * 1000
@@ -1131,11 +1163,28 @@ class IdentityRuntime:
         if _executive_state_block:
             context.custom_blocks["executive_state"] = _executive_state_block
 
+        if _grounding_snapshot is not None:
+            context.custom_blocks["self_knowledge"] = grounding_context(_grounding_snapshot)
+
+        # Custom blocks are attached after compose(), so compose's internal trim
+        # never saw them. Whole-block trimming would drop the mandatory rules
+        # block before touching grounding, which is the opposite of correct; so
+        # we cap only the unbounded custom content. Observed live: grounding
+        # alone (~15.5k chars) pushed a chat request to 8.8k tokens against an
+        # 8k TPM Groq tier.
+        if self.context_composer.max_tokens > 0:
+            from core.cognitive_engine import cap_custom_block_overage
+            cap_custom_block_overage(context, self.context_composer.max_tokens)
+
         profile_recall = user_profile.try_recall_answer(sanitized_input)
         if profile_recall is None:
             profile_recall = try_explicit_abstain(sanitized_input, user_profile)
 
         stage_started = trace.start_stage()
+        _generation_selection: Dict[str, Any] = {}
+        _generation_error: Optional[Exception] = None
+        _generation_mode = "unavailable"
+        _latency: Optional[float] = None
         if _reflex_dispatch is not None:
             raw_output = (
                 f"Started reflex `{_reflex_dispatch['reflex_id']}` as durable task "
@@ -1143,8 +1192,10 @@ class IdentityRuntime:
                 f"`{_reflex_dispatch['procedure_id']}` version "
                 f"{_reflex_dispatch['procedure_version']}. No model planning call was made."
             )
+            _generation_mode = "reflex_dispatch"
         elif profile_recall is not None:
             raw_output = profile_recall
+            _generation_mode = "profile_recall"
         elif self.adapter:
             self._emit(EventType.MODEL_REQUESTED, identity_id=identity.id,
                        session_id=session_id, model=self.adapter.model)
@@ -1161,30 +1212,65 @@ class IdentityRuntime:
                 generate_kwargs["execute_tool"] = _execute_tool_call
                 generate_kwargs["tool_choice"] = "auto"
 
+            if _grounding_snapshot is not None:
+                from adapters.contracts import options
+                generate_kwargs.update(options(self.adapter, _grounding_snapshot))
             model_input = user_profile.augment_recall_input(sanitized_input)
+            from adapters.contracts import compatible_kwargs
+            generate_kwargs = compatible_kwargs(self.adapter, generate_kwargs)
             try:
                 raw_output = self.adapter.generate(
                     context=context.render(), user_input=model_input,
                     identity=identity, **generate_kwargs,
                 )
-            except TypeError:
-                raw_output = self.adapter.generate(
-                    context=context.render(), user_input=model_input, identity=identity,
-                )
+            except Exception as exc:
+                # A generation failure must terminate cleanly and defer — never
+                # hang the interaction indefinitely and never surface as an
+                # unhandled HTTP 500 (live-test finding: chain exhaustion used
+                # to propagate straight out of process()).
+                _generation_error = exc
 
-            raw_output = str(raw_output or "")
-            raw_output = re.sub(r"\[Thought\]", "<thought>", raw_output, flags=re.IGNORECASE)
-            raw_output = re.sub(r"\[/Thought\]", "</thought>", raw_output, flags=re.IGNORECASE)
-            if raw_output.count("<thought>") > raw_output.count("</thought>"):
-                raw_output += "\n</thought>"
+            if _generation_error is None:
+                _generation_mode = "identity_model_generation"
+                raw_output = str(raw_output or "")
+                raw_output = re.sub(r"\[Thought\]", "<thought>", raw_output, flags=re.IGNORECASE)
+                raw_output = re.sub(r"\[/Thought\]", "</thought>", raw_output, flags=re.IGNORECASE)
+                if raw_output.count("<thought>") > raw_output.count("</thought>"):
+                    raw_output += "\n</thought>"
+            else:
+                raw_output = ""
 
             _latency = _time_mod.monotonic() - _t0
-            self._emit(EventType.MODEL_RESPONDED, identity_id=identity.id,
-                       session_id=session_id, model=self.adapter.model,
-                       response_length=len(raw_output), latency_ms=round(_latency * 1000))
+            # Which provider actually generated the reply — never assume the
+            # chain head did (a fallback chain reports the real selection).
+            _generation_selection = getattr(self.adapter, "last_selection", None) or {
+                "provider": type(self.adapter).__name__,
+                "model": str(getattr(self.adapter, "model", "") or ""),
+                "attempted": [],
+            }
+            if _generation_error is not None:
+                _generation_selection = dict(_generation_selection)
+                _generation_selection["error"] = str(_generation_error)
+                self._emit_subsystem_failure(
+                    "model_generation",
+                    _generation_error,
+                    identity_id=identity.id,
+                    session_id=session_id,
+                )
+            else:
+                self._emit(EventType.MODEL_RESPONDED, identity_id=identity.id,
+                           session_id=session_id,
+                           model=_generation_selection.get("model") or self.adapter.model,
+                           response_length=len(raw_output), latency_ms=round(_latency * 1000))
         else:
             raw_output = f"[No adapter configured. Context prepared for {identity.name}]"
         trace.end_stage("model", stage_started)
+
+        if _generation_error is not None:
+            raw_output = (
+                "[Generation unavailable] The model runtime could not generate a reply "
+                f"({type(_generation_error).__name__}). The request is deferred; no reply was produced."
+            )
 
         _has_evidence = bool(_evidence_results)
 
@@ -1212,6 +1298,16 @@ class IdentityRuntime:
                     session_id=session_id,
                 )
         trace.end_stage("prometheus_post", stage_started)
+
+        if _grounding_snapshot is not None and not _has_evidence:
+            # The snapshot-citation contract exists to stop unverifiable
+            # SELF claims. When this turn already has verified tool evidence,
+            # the evidence itself is the contract; forcing prose through the
+            # citation validator would dump the tracking card over a perfectly
+            # sound, evidenced answer (live chat finding).
+            raw_output, _grounding_metadata = guard_response(raw_output, _grounding_snapshot, current=_self_reader.snapshot())
+            if _grounding_metadata['guard'] == 'fallback':
+                _generation_mode = 'runtime_grounded_fallback'
 
         if _has_evidence:
             _fails = sum(1 for r in _evidence_results if not r["success"])
@@ -1404,6 +1500,25 @@ class IdentityRuntime:
                     session_id=session_id,
                 )
 
+        generation_provenance = {
+            "generation_mode": _generation_mode,
+            "self_knowledge": _grounding_metadata,
+            "provider": str(_generation_selection.get("provider", "")),
+            "model": str(_generation_selection.get("model", "")),
+            "latency_ms": round(_latency * 1000) if _latency is not None else None,
+            "attempted": list(_generation_selection.get("attempted", [])),
+            "memory_ids": list(context.source_ids.get("memory", [])),
+            "recent_message_ids": list(context.source_ids.get("recent", [])),
+            "fact_ids": list(context.source_ids.get("facts", [])),
+            "policy": {
+                "input_allowed": input_policy.allowed,
+                "input_policies": list(input_policy.applied_policies),
+                "output_allowed": output_policy.allowed,
+                "output_policies": list(output_policy.applied_policies),
+            },
+            "output_message_id": episodic.id,
+        }
+
         return InteractionResponse(
             request_id=request.id, identity_id=identity.id, user_id=user_id, output=final_output,
             context_used=context, policy_passed=policy_passed, eval_score=eval_report.overall_score,
@@ -1412,6 +1527,7 @@ class IdentityRuntime:
                 "debug_request_id": request.id if debug_recorded else None,
                 "capability_results": [dict(item) for item in _evidence_results],
                 "reflex": dict(_reflex_dispatch) if _reflex_dispatch else None,
+                "generation_provenance": generation_provenance,
             },
         )
 

@@ -9,7 +9,7 @@ import os
 import secrets
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -56,11 +56,22 @@ if os.path.isfile(_env_file):
 _store_path = os.environ.get("IDENTITY_STORE_PATH", ".identity_store")
 storage = JSONFileBackend(root_dir=_store_path)
 
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+logger.info(
+    "IdentityOS runtime starting: project_root=%s store=%s",
+    _project_root,
+    os.path.abspath(_store_path),
+)
+
 try:
     adapter = build_adapter_from_env()
 except (ImportError, ValueError) as exc:
     adapter = None
     logger.warning("Failed to configure model adapter: %s", exc)
+
+from adapters import describe_adapter
+
+logger.info("Model adapter chain: %s", describe_adapter(adapter))
 
 runtime = IdentityRuntime(storage=storage, adapter=adapter)
 register_default_criteria(runtime.evaluation_engine)
@@ -123,6 +134,7 @@ class ProcessResponse(BaseModel):
     eval_score: Optional[float] = None
     session_mode: str = "normal"
     timings_ms: Dict[str, float] = Field(default_factory=dict)
+    generation_provenance: Optional[Dict[str, Any]] = None
 
 
 class MemoryRequest(BaseModel):
@@ -300,6 +312,7 @@ async def process(req: ProcessRequest):
         eval_score=result.eval_score,
         session_mode=runtime.get_session_mode(session_id).value,
         timings_ms=result.metadata.get("timings_ms", {}),
+        generation_provenance=result.metadata.get("generation_provenance"),
     )
 
 

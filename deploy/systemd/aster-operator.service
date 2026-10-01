@@ -1,0 +1,75 @@
+# Aster persistent identity runtime — deployment unit template.
+#
+# This unit is the reference for running Aster 24/7 on an always-on Linux VM,
+# independent of Arsène's laptop. It differs from the local workstation unit in
+# the ways that matter for unattended operation:
+#
+#   Restart=always        a crash or an OOM kill must come back on its own
+#   TimeoutStopSec        in-flight work finishes and state is persisted
+#   EnvironmentFile       secrets are injected at runtime, never committed
+#   --email-interval      mailbox ingest runs on its own short cadence, so a
+#                         human is not answered on the operator tick interval
+#
+# Install:
+#   1. copy this file to ~/.config/systemd/user/aster-operator.service
+#   2. set IDENTITYOS_HOME, IDENTITY_STORE, and both EnvironmentFile paths
+#   3. systemctl --user daemon-reload && systemctl --user enable --now aster-operator.service
+#   4. systemctl --user enable --now aster-presence.service   (dashboard)
+#   5. loginctl enable-linger <user>   (survives logout/reboot)
+
+[Unit]
+Description=Aster Autonomous IdentityOS Operator
+Documentation=file:%h/Documents/Doug/IdentityOS/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Doug/IdentityOS
+Environment=PYTHONPATH=%h/Documents/Doug/IdentityOS
+# The store the running identity already uses. Do NOT repoint this to a new
+# path or backend as part of a deploy: there is no store-migration command, so
+# a new location starts as an empty identity that looks healthy and has lost
+# every relationship, memory, and email job. Moving to sqlite under
+# ~/.identityos/data is a separate, deliberate migration with a verified
+# copy — not a line edit here.
+Environment=IDENTITY_STORE=%h/Documents/Doug/IdentityOS/.identity_store
+Environment=IDENTITY_BACKEND=json
+Environment=ASTER_LOG_FORMAT=json
+# Non-zero on any style, serialization, or integrity violation, so a
+# misconfigured deployment fails loudly instead of silently degrading.
+Environment=PYTHONUNBUFFERED=1
+# Secrets are injected here. Never commit these files. The leading "-" makes a
+# missing file non-fatal, which is right for an optional provider but means a
+# started unit does NOT prove it can send mail — check /api/health.
+EnvironmentFile=-%h/Documents/Doug/IdentityOS/.env
+EnvironmentFile=-%h/Documents/Doug/.env
+ExecStart=%h/Documents/Doug/IdentityOS/.venv/bin/python -m cli.main aster run \
+    --iterations -1 \
+    --interval 300 \
+    --email-interval 20 \
+    --search \
+    --with-culture
+Restart=always
+RestartSec=15
+# Give an in-flight reply time to finish and persist before SIGKILL, so a
+# deploy never truncates a generated response mid-send.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+# Hardening: the whole OS stays read-only, and the only writable place in $HOME
+# is the checkout itself. The runtime genuinely needs that: the identity store
+# (.identity_store), its secrets and culture state (.identityos/), and any
+# capability Prometheus clones and installs all live under the project root.
+# Allowing just this one subtree keeps the rest of the home directory
+# unreadable, which a blanket ProtectHome=false would give up for nothing.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Documents/Doug/IdentityOS
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aster-operator
+
+[Install]
+WantedBy=default.target

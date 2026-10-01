@@ -158,6 +158,24 @@ class CapabilityResult:
             data=self.data,
         )
 
+    def to_dict(self) -> dict:
+        """Full lossless serialization (data included), for evidence and tests."""
+        return {
+            "capability": self.capability,
+            "action": self.action,
+            "success": self.success,
+            "confidence": self.confidence,
+            "source": self.source,
+            "timestamp": self.timestamp,
+            "duration_ms": self.duration_ms,
+            "error": self.error,
+            "data": self.data,
+            "citations": self.citations,
+            "metadata": self.metadata,
+            "params": self.params,
+            "custody": self.custody,
+        }
+
     def to_evidence_dict(self) -> dict:
         return {
             "capability": self.capability,

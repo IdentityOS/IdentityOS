@@ -1,0 +1,54 @@
+# Aster dashboard / presence service — deployment unit template.
+#
+# Serves the communications center and health endpoints on localhost. Reach it
+# over a private overlay (Tailscale Serve) or an SSH tunnel. Do not bind it to
+# a public interface without putting real authentication in front of it: the
+# read API exposes Aster's conversations, and the write API can steer her.
+
+[Unit]
+Description=Aster Presence Dashboard and Communications Center
+After=network.target aster-operator.service
+Wants=aster-operator.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Doug/IdentityOS
+Environment=PYTHONPATH=%h/Documents/Doug/IdentityOS
+# Must match the operator's store exactly, or the dashboard reports an empty
+# identity and the push queue it holds is invisible to the process that drains
+# it. See the operator unit for why this is not a fresh path.
+Environment=IDENTITY_STORE=%h/Documents/Doug/IdentityOS/.identity_store
+Environment=IDENTITY_BACKEND=json
+Environment=ASTER_PRESENCE_HOST=127.0.0.1
+Environment=ASTER_PRESENCE_PORT=8787
+Environment=ASTER_LOG_FORMAT=json
+Environment=PYTHONUNBUFFERED=1
+# Event-driven Gmail ingest. Populated from the OAuth flow in
+# deploy/README.md; left empty, polling remains the only path and the runtime
+# starts normally.
+EnvironmentFile=-%h/Documents/Doug/IdentityOS/.env
+EnvironmentFile=-%h/Documents/Doug/.env
+# Gmail push OAuth. Optional on purpose: with no credentials this process
+# starts normally and reports gmail_push: not_configured, leaving polling as
+# the ingest path. Note the leading "-": a missing file is NOT an error, so
+# verify /api/health shows the credentials actually loaded rather than
+# assuming a started unit has them.
+EnvironmentFile=-%h/Documents/Doug/IdentityOS/.gmail_push.env
+ExecStart=%h/Documents/Doug/IdentityOS/.venv/bin/python -m runtime.health_server --host ${ASTER_PRESENCE_HOST} --port ${ASTER_PRESENCE_PORT} --store ${IDENTITY_STORE}
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The push receiver writes the notification queue and watch state, so it needs
+# write access to the same store the operator reads.
+ReadWritePaths=%h/Documents/Doug/IdentityOS
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aster-presence
+
+[Install]
+WantedBy=default.target

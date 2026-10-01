@@ -110,6 +110,9 @@ class SambaNovaAdapter(OpenAIAdapter):
         max_tokens: Optional[int] = None,
         **kwargs
     ) -> str:
+        if "_generation_budget" in kwargs:
+            return super().generate(context, user_input, identity, temperature=temperature,
+                                    max_tokens=max_tokens, retries=1, **kwargs)
         last_error = None
         now = time.time()
         deadline = now + 60  # Give up after 60s so chain can fall through

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import struct
 import subprocess
@@ -144,7 +145,7 @@ def _score_result(task: str, title: str, snippet: str, url: str) -> dict[str, An
 
 class _NativeMessagingClient:
     """Client for communicating with the Firefox Native Messaging host."""
-    
+
     def __init__(self, host_script: Optional[str] = None):
         self._host_script = host_script or os.environ.get(
             "IDENTITYOS_NATIVE_HOST",
@@ -157,7 +158,7 @@ class _NativeMessagingClient:
         self._responses: dict[int, dict] = {}
         self._reader_thread: Optional[threading.Thread] = None
         self._running = False
-        
+
     def _ensure_started(self) -> None:
         if self._running:
             return
@@ -175,7 +176,7 @@ class _NativeMessagingClient:
             time.sleep(0.3)
         except Exception as e:
             raise RuntimeError(f"Failed to start native messaging host: {e}")
-    
+
     def _read_loop(self) -> None:
         """Read length-prefixed JSON messages from stdout."""
         while self._running and self._process and self._process.stdout:
@@ -194,28 +195,28 @@ class _NativeMessagingClient:
                     self._pending[msg_id].set()
             except Exception:
                 break
-    
+
     def send(self, msg_type: str, **kwargs) -> dict:
         """Send a message and wait for response."""
         self._ensure_started()
-        
+
         with self._lock:
             self._request_id += 1
             req_id = self._request_id
             event = threading.Event()
             self._pending[req_id] = event
-            
+
             message = {"id": req_id, "type": "browser", **kwargs}
             encoded = json.dumps(message).encode("utf-8")
             length = struct.pack("@I", len(encoded))
-            
+
             try:
                 if self._process and self._process.stdin:
                     _write_all(self._process.stdin, struct.pack("@I", len(encoded)) + encoded)
             except Exception as e:
                 self._pending.pop(req_id, None)
                 raise RuntimeError(f"Failed to send message: {e}")
-        
+
         # Wait for response with timeout
         if event.wait(timeout=30.0):
             response = self._responses.pop(req_id, None)
@@ -226,7 +227,7 @@ class _NativeMessagingClient:
         else:
             self._pending.pop(req_id, None)
             raise TimeoutError("Native messaging host request timed out")
-    
+
     def close(self) -> None:
         self._running = False
         if self._process:
@@ -826,6 +827,39 @@ class BrowserCapability(Capability):
                 required=("tab_id", "key"),
             ),
         ),
+
+
+        Skill(
+            name="browser.autonomous_task",
+            description="Execute an autonomous browser task from a high-level goal. The planner observes, reasons, acts, and verifies until the goal is achieved or escalation is needed.",
+            permission="browser:write",
+            effect="execute",
+            input_schema=object_schema(
+                {
+                    "goal": {"type": "string", "minLength": 1},
+                    "max_steps": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                    "allowed_effects": {"type": "array", "items": {"type": "string"}, "default": ["READ_ONLY", "REVERSIBLE"]},
+                    "stop_conditions": {"type": "array", "items": {"type": "string"}},
+                    "timeout_seconds": {"type": "integer", "minimum": 30, "maximum": 3600, "default": 300},
+                },
+                required=("goal",),
+            ),
+        ),
+        Skill(
+            name="browser.wait_for_human",
+            description="Pause autonomous execution and wait for human intervention (CAPTCHA, MFA, ambiguous target, etc.). Provide a reason and optional screenshot.",
+            permission="browser:write",
+            effect="escalate",
+            input_schema=object_schema(
+                {
+                    "reason": {"type": "string", "minLength": 1},
+                    "escalation_type": {"type": "string", "enum": ["CAPTCHA", "MFA", "AUTH_REQUIRED", "AMBIGUOUS_TARGET", "CONSEQUENTIAL_ACTION", "PAYMENT_CONFIRMATION", "PERMISSION_REQUIRED", "MANUAL_INTERACTION", "UNKNOWN_BLOCKER"]},
+                    "screenshot_path": {"type": "string"},
+                    "resume_token": {"type": "string"},
+                },
+                required=("reason", "escalation_type"),
+            ),
+        ),
     ]
 
     def skills(self) -> list[Skill]:
@@ -892,7 +926,10 @@ class BrowserCapability(Capability):
                 "browser.live.fill": self._live_fill,
                 "browser.live.type": self._live_type,
                 "browser.live.press": self._live_press,
-            }
+
+            "browser.autonomous_task": self._autonomous_task,
+            "browser.wait_for_human": self._wait_for_human,
+}
             handler = dispatch.get(skill_name)
             if handler is None:
                 return CapabilityResult.fail(
@@ -1686,6 +1723,33 @@ class BrowserCapability(Capability):
 
         return run_in_browser_thread(_do)
 
+
+    def _screenshot(self, full_page: bool = False, **_: Any) -> dict[str, Any]:
+        """Take a screenshot of the current page."""
+        def _do() -> dict[str, Any]:
+            state = self._session()
+            if state is None or state.page is None:
+                return {"error": "no open browser session — call browser.open or browser.use_profile first"}
+            import os
+            import tempfile
+            from datetime import datetime
+
+            # Create screenshot directory
+            screenshot_dir = os.path.join(self._storage_root, self._require_identity(), "screenshots")
+            os.makedirs(screenshot_dir, exist_ok=True)
+
+            # Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"screenshot_{timestamp}.png"
+            filepath = os.path.join(screenshot_dir, filename)
+
+            with state.lock:
+                state.page.screenshot(path=filepath, full_page=full_page)
+
+            return {"ok": True, "path": filepath, "full_page": full_page}
+
+        return run_in_browser_thread(_do)
+
     # ─── Multi-tab Handlers ──────────────────────────────────────────────
 
     def _new_tab(self, url: str = "about:blank", **_: Any) -> dict[str, Any]:
@@ -1828,3 +1892,566 @@ class BrowserCapability(Capability):
     def _live_press(self, tab_id: str, key: str, **_: Any) -> dict[str, Any]:
         """Press a keyboard key in a tab of the user's real Firefox browser."""
         return _call_native("press", tabId=tab_id, key=key)
+
+
+
+    def _plan_next_action(self, obs: dict, goal: str, steps: list, allowed_effects: list) -> dict:
+        """
+        Heuristic-based planner for autonomous browser tasks.
+
+        Returns an action plan dict with:
+        - action: skill name to execute
+        - params: parameters for the skill
+        - reasoning: explanation of why this action
+        - expected_effect: effect classification
+        """
+        import re
+
+        url = obs.get("url", "").lower()
+        title = obs.get("title", "").lower()
+        interactive = obs.get("interactive", [])
+        goal_lower = goal.lower()
+
+        # If no browser session, open one
+        if not url or url in ("about:blank", "about:newtab"):
+            return {
+                "action": "browser.open",
+                "params": {"url": "https://www.google.com"},
+                "reasoning": "No active browser session, opening default page",
+                "expected_effect": "READ_ONLY"
+            }
+
+        # Check if we need to navigate to a URL mentioned in the goal
+        # This should be done early, before trying to click things
+        url_matches = re.findall(r'https?://[^\s]+', goal)
+        for target_url in url_matches:
+            if target_url.lower() not in url:
+                return {
+                    "action": "browser.navigate",
+                    "params": {"url": target_url},
+                    "reasoning": f"Navigating to target URL from goal: {target_url}",
+                    "expected_effect": "READ_ONLY"
+                }
+
+        # Also check for bare domain names in the goal
+        bare_matches = re.findall(r'\b([a-zA-Z0-9.-]+\.(?:com|org|net|io|dev|app|co|ai))\b', goal)
+        for domain in bare_matches:
+            if domain.lower() not in url:
+                return {
+                    "action": "browser.navigate",
+                    "params": {"url": f"https://{domain}"},
+                    "reasoning": f"Navigating to target domain from goal: {domain}",
+                    "expected_effect": "READ_ONLY"
+                }
+
+        # Goal: search for something (check before click/find to prioritize explicit search)
+        if "search" in goal_lower:
+            # Check if we just did a search and have results - then navigate to top result
+            if steps and len(steps) > 0:
+                last_step = steps[-1]
+                if (last_step.get("action") == "browser.search" and
+                    last_step.get("success") and
+                    last_step.get("result", {}).get("recommended")):
+                    # Navigate to the first recommended result
+                    recommended = last_step["result"]["recommended"]
+                    if recommended:
+                        top_result = recommended[0]
+                        return {
+                            "action": "browser.navigate",
+                            "params": {"url": top_result["url"]},
+                            "reasoning": f"Navigating to top search result: {top_result['title'][:50]}",
+                            "expected_effect": "READ_ONLY"
+                        }
+
+            # Extract search query from goal
+            search_query = goal
+            for prefix in ["search for ", "search "]:
+                if prefix in goal_lower:
+                    search_query = goal_lower.split(prefix, 1)[1]
+                    break
+            return {
+                "action": "browser.search",
+                "params": {"query": search_query, "task": goal},
+                "reasoning": f"Searching for: {search_query}",
+                "expected_effect": "READ_ONLY"
+            }
+
+        # Goal: find/click a specific link/text
+        if "click" in goal_lower or "find" in goal_lower or "learn more" in goal_lower:
+            # Look for matching elements
+            for el in interactive:
+                name = el.get("name", "").lower()
+                role = el.get("role", "").lower()
+                # Check for "learn more", "more", "continue", "next", etc.
+                if any(keyword in name for keyword in ["learn more", "more", "continue", "next", "read more", "view more"]):
+                    return {
+                        "action": "browser.click",
+                        "params": {"selector": el.get("selector", "")},
+                        "reasoning": f"Found target link: {el.get('name', '')}",
+                        "expected_effect": "REVERSIBLE"
+                    }
+
+        # Goal: login
+        if "login" in goal_lower or "sign in" in goal_lower:
+            # Look for login form elements
+            for el in interactive:
+                if el.get("type") in ("password", "email", "username") or "login" in el.get("name", "").lower() or "sign in" in el.get("name", "").lower():
+                    return {
+                        "action": "browser.click",
+                        "params": {"selector": el.get("selector", "")},
+                        "reasoning": "Found login form element",
+                        "expected_effect": "REVERSIBLE"
+                    }
+
+        # Default: if we have interactive elements, click the first meaningful one
+        for el in interactive:
+            name = el.get("name", "").strip()
+            if name and len(name) > 2 and el.get("role") in ("link", "button", "menuitem"):
+                return {
+                    "action": "browser.click",
+                    "params": {"selector": el.get("selector", "")},
+                    "reasoning": f"Exploring: clicking {name}",
+                    "expected_effect": "REVERSIBLE"
+                }
+
+        # No action found - might be complete
+        return {
+            "action": "COMPLETE",
+            "reasoning": "No further actions identified, goal may be complete",
+        }
+
+    def detect_loop(self, action_history: list) -> bool:
+        """Detect if the same action is being repeated with the same result."""
+        if len(action_history) < 4:
+            return False
+        # Check last 4 actions for pattern
+        recent = action_history[-4:]
+        # Simple loop: same action + same target + same result repeated
+        if len(set((a["action"], a["target"][:50], a["result"]) for a in recent)) == 1:
+            return True
+        # Alternating loop: A-B-A-B pattern
+        if len(recent) >= 4:
+            if (recent[0]["action"] == recent[2]["action"] and
+                recent[1]["action"] == recent[3]["action"] and
+                recent[0]["target"][:50] == recent[2]["target"][:50] and
+                recent[1]["target"][:50] == recent[3]["target"][:50]):
+                return True
+        return False
+
+    # Autonomous Task Handler
+
+    def _autonomous_task(
+        self,
+        goal: str = "",
+        max_steps: int = 50,
+        allowed_effects: list = None,
+        stop_conditions: list = None,
+        timeout_seconds: int = 300,
+        **_: Any,
+    ) -> dict[str, Any]:
+        """
+        Execute an autonomous browser task from a high-level goal.
+
+        Implements the observe->reason->act->verify loop:
+        1. Observe browser state (snapshot, tabs, URL)
+        2. Reason about next action based on goal
+        3. Act (execute browser skill)
+        4. Verify result
+        5. Record evidence
+        6. Checkpoint
+        7. Loop detection / escalation / completion
+        """
+        import time
+        import hashlib
+
+        start_time = time.time()
+        allowed_effects = allowed_effects or ["READ_ONLY", "REVERSIBLE"]
+        stop_conditions = stop_conditions or []
+        task_id = hashlib.md5(f"{goal}{time.time()}".encode()).hexdigest()[:8]
+        steps = []
+        action_history = []  # For loop detection
+        consecutive_failures = 0
+
+        # Helper: get compact observation
+        def get_observation():
+            snap = self._snapshot()
+            if snap.get("error"):
+                return {"error": snap.get("error"), "url": "", "title": "", "interactive": []}
+            # Compute hash for loop detection
+            obs_text = f"{snap.get('url','')}|{snap.get('title','')}|{len(snap.get('interactive',[]))}"
+            obs_hash = hashlib.sha256(obs_text.encode()).hexdigest()[:16]
+            return {
+                "url": snap.get("url", ""),
+                "title": snap.get("title", ""),
+                "interactive_count": snap.get("interactive_count", 0),
+                "interactive": snap.get("interactive", [])[:20],  # Limit for token budget
+                "obs_hash": obs_hash,
+            }
+
+        # Helper: classify action effect
+        def classify_effect(action, params):
+            if action in ("browser.open", "browser.navigate", "browser.snapshot", "browser.status", "browser.list_tabs", "browser.eval_js"):
+                return "READ_ONLY"
+            if action in ("browser.click", "browser.type", "browser.fill", "browser.press", "browser.wait"):
+                return "REVERSIBLE"
+            if action in ("browser.upload_file", "browser.download", "browser.screenshot", "browser.analyze_screenshot"):
+                return "EXTERNAL_SIDE_EFFECT"
+            if action in ("browser.login", "browser.use_profile"):
+                return "CONSEQUENTIAL"
+            return "REVERSIBLE"
+
+        # Helper: check if goal is achieved (simple heuristic)
+        def check_goal_complete(obs, goal, steps=None):
+            goal_lower = goal.lower()
+            if not obs or obs.get("error"):
+                return False
+            url = obs.get("url", "").lower()
+            current = urlparse(url)
+            current_host = (current.hostname or "").casefold()
+
+            def host_matches(domain: str) -> bool:
+                domain = domain.casefold().lstrip(".")
+                return current_host == domain or current_host.endswith(f".{domain}")
+
+            # Compute flags early for use in all URL checks
+            has_click_find = ("find" in goal_lower or "click" in goal_lower)
+            has_go_navigate = ("go to" in goal_lower or "navigate" in goal_lower)
+            pure_navigation = not (has_click_find and has_go_navigate)
+
+            # Check for explicit completion indicators
+            if "stop" in goal_lower or "done" in goal_lower or "complete" in goal_lower:
+                page_text = str(obs.get("interactive", [])).lower()
+                if any(w in page_text for w in ["done", "complete", "finished", "success", "submitted"]):
+                    return True
+
+            # URL-based conditions (specific known sites) - only if pure navigation
+            if pure_navigation:
+                if "github" in goal_lower and current_host in {"github.com", "www.github.com"}:
+                    return True
+                if "login" in goal_lower and ("dashboard" in url or "home" in url or "account" in url):
+                    return True
+
+            # Generic: if goal mentions a specific URL/path and we're there
+            import re
+            url_matches = re.findall(r'https?://[^\s]+', goal)
+            for target_url in url_matches:
+                target = urlparse(target_url.rstrip(".,;"))
+                target_host = (target.hostname or "").casefold()
+                target_path = target.path.rstrip("/")
+                current_path = current.path.rstrip("/")
+                if (
+                    pure_navigation
+                    and target_host
+                    and host_matches(target_host)
+                    and (not target_path or current_path == target_path or current_path.startswith(f"{target_path}/"))
+                ):
+                    return True
+
+            # Generic: if goal mentions a domain and we're on that domain
+            bare_matches = re.findall(r'\b([a-zA-Z0-9.-]+\.(?:com|org|net|io|dev|app|co|ai))\b', goal)
+            for domain in bare_matches:
+                if host_matches(domain) and pure_navigation:
+                    return True
+
+            # Check for "click X" or "find X" patterns - if we've clicked a matching element
+            if steps and len(steps) > 0:
+                last_step = steps[-1]
+                if last_step.get("success") and last_step.get("action") in ("browser.click", "browser.navigate"):
+                    # If goal says "find X" or "click X" and we successfully clicked/navigated
+                    if has_click_find:
+                        if not has_go_navigate:
+                            # Simple click/find goal - done after click
+                            return True
+                        else:
+                            # Compound goal: "go to X and click Y"
+                            # Check if we've done both: navigated to target URL AND clicked something
+                            # Look for a navigate step to the target URL followed by a click
+                            target_urls = re.findall(r'https?://[^\s]+', goal)
+                            for target_url in target_urls:
+                                # Check if we have a navigate to target_url followed by a click
+                                for i in range(len(steps) - 1):
+                                    if (steps[i].get("action") == "browser.navigate" and
+                                        steps[i].get("success") and
+                                        target_url.lower() in steps[i].get("params", {}).get("url", "").lower()):
+                                        if (steps[i+1].get("action") == "browser.click" and
+                                            steps[i+1].get("success")):
+                                            return True
+                            # Also check bare domains
+                            bare_matches = re.findall(r'([a-zA-Z0-9.-]+\.(?:com|org|net|io|dev|app|co|ai))', goal)
+                            for domain in bare_matches:
+                                for i in range(len(steps) - 1):
+                                    if (steps[i].get("action") == "browser.navigate" and
+                                        steps[i].get("success") and
+                                        domain.lower() in steps[i].get("params", {}).get("url", "").lower()):
+                                        if (steps[i+1].get("action") == "browser.click" and
+                                            steps[i+1].get("success")):
+                                            return True
+
+            # Check for "click X to go to Y" pattern
+
+            # Check for "click X to go to Y" pattern
+            if "click" in goal_lower and "page" in goal_lower:
+                page_match = re.search(r'page\s+(\d+)', goal_lower)
+                if page_match:
+                    target_page = page_match.group(1)
+                    if f"page/{target_page}" in url or f"page/{target_page}/" in url:
+                        return True
+
+            return False
+
+        # Main autonomous loop
+        step = 0
+        while step < max_steps:
+            step += 1
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                return {"ok": False, "task_id": task_id, "error": f"Timeout after {timeout_seconds}s", "steps": steps}
+
+            # 1. OBSERVE
+            obs = get_observation()
+            if obs.get("error"):
+                # If no browser session, auto-open one
+                if "no open browser session" in obs["error"].lower():
+                    open_result = self._call("browser.open", url="https://www.google.com")
+                    if not open_result.success:
+                        return {"ok": False, "task_id": task_id, "error": f"Failed to auto-open browser: {open_result.error}", "steps": steps}
+                    steps.append({
+                        "step": step,
+                        "action": "browser.open",
+                        "params": {"url": "https://www.google.com"},
+                        "success": True,
+                        "result": "Auto-opened browser for task",
+                        "timestamp": time.time(),
+                    })
+                    # Re-observe
+                    obs = get_observation()
+                    if obs.get("error"):
+                        return {"ok": False, "task_id": task_id, "error": f"Observation failed after auto-open: {obs['error']}", "steps": steps}
+                else:
+                    return {"ok": False, "task_id": task_id, "error": f"Observation failed: {obs['error']}", "steps": steps}
+
+            # Check goal completion
+            if check_goal_complete(obs, goal, steps):
+                return {
+                    "ok": True,
+                    "task_id": task_id,
+                    "goal": goal,
+                    "completed": True,
+                    "final_url": obs.get("url"),
+                    "final_title": obs.get("title"),
+                    "steps_taken": step - 1,
+                    "steps": steps,
+                    "duration_seconds": time.time() - start_time,
+                }
+
+            # Check stop conditions
+            for cond in stop_conditions:
+                if cond.lower() in str(obs).lower():
+                    return {
+                        "ok": True,
+                        "task_id": task_id,
+                        "goal": goal,
+                        "completed": True,
+                        "stop_condition_met": cond,
+                        "final_url": obs.get("url"),
+                        "steps": steps,
+                    }
+
+            # 2. REASON - Use the model to decide next action
+            # Build a compact prompt for the planner
+            # Build a compact prompt for the planner
+            obs_summary = (
+                f"URL: {obs.get('url', '')}\n"
+                f"Title: {obs.get('title', '')}\n"
+                f"Interactive elements: {obs.get('interactive_count', 0)}\n"
+            )
+            for el in obs.get("interactive", [])[:15]:
+                obs_summary += f"  - {el.get('role', '')}: {el.get('name', '')} ({el.get('selector', '')})\n"
+
+
+            # Build planner prompt
+            planner_prompt = f"""You are an autonomous browser agent. Your goal: {goal}
+
+Current page state:
+{obs_summary}
+
+Available actions: browser.open, browser.navigate, browser.click, browser.type, browser.fill, browser.press, browser.wait, browser.eval_js, browser.screenshot, browser.analyze_screenshot, browser.upload_file, browser.download, browser.list_tabs, browser.switch_tab, browser.new_tab, browser.close_tab, browser.checkpoint_create, browser.checkpoint_restore
+
+Previous actions (last 5):
+{json.dumps(steps[-5:], indent=2) if steps else "None"}
+
+Allowed effects: {allowed_effects}
+
+Decide the NEXT SINGLE ACTION. Return JSON with:
+{{
+  "action": "skill_name",
+  "params": {{{...}}},
+  "reasoning": "why this action",
+  "expected_effect": "READ_ONLY|REVERSIBLE|EXTERNAL_SIDE_EFFECT|CONSEQUENTIAL"
+}}
+
+If the goal appears complete, return {{"action": "COMPLETE", "reasoning": "..."}}
+If you need human help, return {{"action": "ESCALATE", "escalation_type": "...", "reason": "..."}}"""
+
+            # Call the model to decide next action
+            # For now, use a simple heuristic-based planner
+            # TODO: Replace with actual model call via adapter
+            action_plan = self._plan_next_action(obs, goal, steps, allowed_effects)
+
+            if action_plan.get("action") == "COMPLETE":
+                return {
+                    "ok": True,
+                    "task_id": task_id,
+                    "goal": goal,
+                    "completed": True,
+                    "final_url": obs.get("url"),
+                    "final_title": obs.get("title"),
+                    "steps_taken": step - 1,
+                    "steps": steps,
+                    "reasoning": action_plan.get("reasoning"),
+                    "duration_seconds": time.time() - start_time,
+                }
+
+            if action_plan.get("action") == "ESCALATE":
+                # Call wait_for_human
+                esc_result = self._wait_for_human(
+                    reason=action_plan.get("reason", "Planner requested escalation"),
+                    escalation_type=action_plan.get("escalation_type", "UNKNOWN_BLOCKER"),
+                )
+                # After escalation, continue loop
+                continue
+
+            # 3. ACT
+            action = action_plan.get("action")
+            params = action_plan.get("params", {})
+            expected_effect = action_plan.get("expected_effect", "REVERSIBLE")
+
+            # Check if effect is allowed
+            if expected_effect not in allowed_effects:
+                steps.append({
+                    "step": step,
+                    "action": action,
+                    "params": params,
+                    "success": False,
+                    "error": f"Effect {expected_effect} not allowed. Allowed: {allowed_effects}",
+                })
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    return {"ok": False, "task_id": task_id, "error": "Too many consecutive failures", "steps": steps}
+                continue
+
+            # Execute the action
+            try:
+                result = self._call(action, **params)
+                success = result.success
+                result_data = result.data if success else result.error
+            except Exception as e:
+                success = False
+                result_data = str(e)
+
+            # 4. VERIFY
+            post_obs = get_observation()
+            state_changed = post_obs.get("obs_hash") != obs.get("obs_hash")
+
+            # Record step
+            step_record = {
+                "step": step,
+                "action": action,
+                "params": params,
+                "expected_effect": expected_effect,
+                "reasoning": action_plan.get("reasoning"),
+                "success": success,
+                "result": result_data,
+                "state_changed": state_changed,
+                "post_url": post_obs.get("url"),
+                "post_title": post_obs.get("title"),
+                "timestamp": time.time(),
+            }
+            steps.append(step_record)
+
+            # Track for loop detection
+            action_history.append({
+                "action": action,
+                "target": str(params)[:100],
+                "result": "success" if success else "failure",
+            })
+            if len(action_history) > 10:
+                action_history.pop(0)
+
+            if self.detect_loop(action_history):
+                return {
+                    "ok": False,
+                    "task_id": task_id,
+                    "error": "Loop detected: same action repeated with same result",
+                    "steps": steps,
+                }
+
+            if not success:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    return {"ok": False, "task_id": task_id, "error": "Too many consecutive failures", "steps": steps}
+            else:
+                consecutive_failures = 0
+
+            # Checkpoint every 5 steps
+            if step % 5 == 0:
+                self._checkpoint_create()
+
+        return {
+            "ok": False,
+            "task_id": task_id,
+            "error": f"Max steps ({max_steps}) reached without completing goal",
+            "steps": steps,
+            "duration_seconds": time.time() - start_time,
+        }
+
+    def _wait_for_human(
+        self,
+        reason: str = "",
+        escalation_type: str = "UNKNOWN_BLOCKER",
+        screenshot_path: str = "",
+        resume_token: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """
+        Pause autonomous execution and wait for human intervention.
+
+        Creates a structured escalation record that can be persisted and resumed.
+        """
+        import time
+        import hashlib
+        import uuid
+
+        escalation_id = str(uuid.uuid4())[:8]
+        timestamp = time.time()
+
+        # Take screenshot if not provided
+        if not screenshot_path:
+            snap = self._screenshot(full_page=True)
+            screenshot_path = snap.get("path", "") if snap.get("ok") else ""
+
+        escalation = {
+            "escalation_id": escalation_id,
+            "task_id": getattr(self, "_current_task_id", "unknown"),
+            "type": escalation_type,
+            "reason": reason,
+            "url": self._snapshot().get("url", ""),
+            "screenshot_path": screenshot_path,
+            "resume_token": resume_token or secrets.token_urlsafe(16),
+            "created_at": timestamp,
+            "status": "waiting",
+        }
+
+        # In a real implementation, this would:
+        # 1. Persist escalation to storage
+        # 2. Notify human (via CLI, webhook, etc.)
+        # 3. Block until human signals resume
+        # 4. Verify obstacle is resolved
+        # 5. Resume task
+
+        # For now, return the escalation record
+        return {
+            "ok": True,
+            "escalation": escalation,
+            "message": f"Escalation created: {escalation_type}. Waiting for human...",
+        }

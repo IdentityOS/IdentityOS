@@ -132,8 +132,12 @@ def build_adapter_from_env(env: Optional[Mapping[str, str]] = None) -> Optional[
 
     groq_keys = _numbered_keys(values, "GROQ_API_KEY")
     if groq_keys and "groq" not in configured:
+        # ``IDENTITY_MODEL`` names the primary/local model and must not be
+        # sent to cloud providers: an Ollama tag such as ``phi4-mini:latest``
+        # is not a Groq model ID (live-test finding). Cloud providers use
+        # their own MODEL variable with a Groq-hosted default.
         candidates.append(GroqAdapter(
-            model=values.get("GROQ_MODEL", values.get("IDENTITY_MODEL", "openai/gpt-oss-120b")),
+            model=values.get("GROQ_MODEL", "openai/gpt-oss-120b"),
             api_keys=groq_keys,
         ))
         configured.add("groq")
@@ -199,6 +203,8 @@ def describe_adapter(adapter: Optional[BaseAdapter]) -> dict[str, Any]:
             {
                 "adapter": type(item).__name__,
                 "model": str(getattr(item, "model", "") or ""),
+                "structured_output": (getattr(item, "structured_output", "prompt_only")
+                    if isinstance(getattr(item, "structured_output", None), str) else "prompt_only"),
             }
             for item in leaves
         ],

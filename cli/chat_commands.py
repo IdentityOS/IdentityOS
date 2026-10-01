@@ -58,9 +58,53 @@ def _leaf_adapters(adapter: Any) -> list[Any]:
 
 
 def _set_adapter_model(adapter: Any, model: str) -> None:
-    for leaf in _leaf_adapters(adapter):
-        leaf.model = model
+    """Set the model on the adapter actually being called, never on all of them.
+
+    Setting one string on every leaf of a chain corrupts the fallbacks: a local
+    Ollama tag becomes the model sent to Groq/Cerebras, which is a guaranteed
+    404. Only the head (selected) adapter's model is meaningful.
+    """
+    leaves = _leaf_adapters(adapter)
+    if leaves:
+        leaves[0].model = model
     adapter.model = model
+
+
+_PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
+    "groq": ("groq",),
+    "cerebras": ("cerebras",),
+    "sambanova": ("sambanova",),
+    "openrouter": ("openrouter",),
+    "anthropic": ("anthropic", "claude"),
+    "ollama": ("ollama",),
+    "gemini": ("gemini",),
+    "nvidia": ("nvidia", "nemotron"),
+}
+
+
+def _find_leaf_by_provider(adapter: Any, token: str) -> Optional[Any]:
+    token = token.lower()
+    keys = _PROVIDER_ALIASES.get(token, (token,))
+    for leaf in _leaf_adapters(adapter):
+        haystacks = (
+            type(leaf).__name__.lower(),
+            str(getattr(leaf, "base_url", "") or "").lower(),
+        )
+        if any(key in hay for key in keys for hay in haystacks):
+            return leaf
+    return None
+
+
+def _promote_leaf(adapter: Any, leaf: Any) -> None:
+    """Move *leaf* to the front of a chain so it is tried first."""
+    leaves = _leaf_adapters(adapter)
+    if leaf not in leaves:
+        return
+    leaves.remove(leaf)
+    leaves.insert(0, leaf)
+    if hasattr(adapter, "_adapters"):
+        adapter._adapters = leaves
+    adapter.model = getattr(leaf, "model", getattr(adapter, "model", ""))
 
 
 def _set_adapter_temperature(adapter: Any, temperature: float) -> None:
@@ -144,10 +188,28 @@ def _cmd_model(ctx: ChatContext, args: list[str]) -> str:
         return "handled"
     if not args:
         print(f"  Current model: {_describe_adapter(adapter)}")
+        leaves = _leaf_adapters(adapter)
+        if len(leaves) > 1:
+            print("  Chain (try order): "
+                  + " → ".join(f"{type(a).__name__}({getattr(a, 'model', '')})" for a in leaves))
         return "handled"
-    new_model = args[0]
-    _set_adapter_model(adapter, new_model)
-    print(f"  Model switched to {new_model}")
+    requested = args[0]
+
+    # A provider name switches provider, not the model string: "/model nvidia"
+    # must start calling NVIDIA, not send "model='nvidia'" to Groq.
+    leaf = _find_leaf_by_provider(adapter, requested)
+    if leaf is not None and "/" not in requested and ":" not in requested:
+        _promote_leaf(adapter, leaf)
+        print(f"  Switched provider to {type(leaf).__name__} "
+              f"(model={getattr(leaf, 'model', '')}).")
+        return "handled"
+
+    # A model slug sets the model of the primary adapter only. Model names are
+    # provider-scoped; smearing them across every adapter breaks all fallbacks.
+    _set_adapter_model(adapter, requested)
+    print(f"  Model set to {requested} on "
+          f"{type(_leaf_adapters(adapter)[0]).__name__} "
+          f"(primary adapter; fallbacks keep their own models).")
     return "handled"
 
 

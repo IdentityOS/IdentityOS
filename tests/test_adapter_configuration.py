@@ -9,6 +9,51 @@ from adapters.groq_adapter import GroqAdapter
 from adapters.openai_adapter import OllamaAdapter, OpenAIAdapter
 
 
+def test_local_model_alias_never_leaks_into_cloud_providers():
+    """Live-test finding: with IDENTITY_ADAPTER=ollama pinning phi4-mini:latest,
+    the fallback chain sent that Ollama tag to Cerebras (404)."""
+    adapter = build_adapter_from_env({
+        "IDENTITY_ADAPTER": "ollama",
+        "IDENTITY_ADAPTER_CONFIG": '{"model":"phi4-mini:latest"}',
+        "IDENTITY_MODEL": "phi4-mini:latest",
+        "OLLAMA_MODEL": "phi4-mini:latest",
+        "GROQ_API_KEY": "grk",
+        "CEREBRAS_API_KEY": "cbk",
+    })
+    from adapters.cerebras_adapter import CerebrasAdapter
+    from adapters.groq_adapter import GroqAdapter
+
+    by_type = {type(leaf).__name__: leaf for leaf in adapter.adapters}
+    assert set((by_type["OllamaAdapter"].model, by_type["GroqAdapter"].model,
+                by_type[CerebrasAdapter.__name__].model)) == {
+        "phi4-mini:latest", "openai/gpt-oss-120b", "gpt-oss-120b",
+    }, "the local Ollama tag belongs only to the Ollama adapter"
+
+
+def test_named_provider_model_and_base_url_do_not_cross_leak():
+    """OPENAI_<NAME>_MODEL/BASE_URL must stay paired with <NAME>."""
+    adapter = build_adapter_from_env({
+        "OPENAI_GEMINI_API_KEY": "g-key",
+        "OPENAI_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "OPENAI_GEMINI_MODEL": "gemini-flash-latest",
+        "OPENAI_NVIDIA_API_KEY": "n-key",
+        "OPENAI_NVIDIA_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "OPENAI_NVIDIA_MODEL": "moonshotai/kimi-k3",
+    })
+    leaves = {leaf.model: leaf for leaf in adapter.adapters}
+    assert leaves["gemini-flash-latest"].base_url.startswith("https://generativelanguage")
+    assert leaves["moonshotai/kimi-k3"].base_url == "https://integrate.api.nvidia.com/v1"
+
+
+def test_placeholder_openai_key_is_treated_as_local_ollama():
+    adapter = build_adapter_from_env({
+        "OPENAI_API_KEY": "ollama",
+        "OPENAI_BASE_URL": "http://localhost:11434/v1",
+    })
+    assert isinstance(adapter, OllamaAdapter)
+    assert "localhost" in (adapter.base_url or "")
+
+
 def test_no_credentials_means_no_adapter():
     assert build_adapter_from_env({}) is None
 

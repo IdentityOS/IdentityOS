@@ -4,6 +4,7 @@ dist/
 .DS_Store
 *.egg-info/
 .env
+.aster-live*/
 identity_runtime.db
 .identity_store/
 .identity_store_cli/
@@ -38,3 +39,22 @@ research/mode-b/manifests/*-smoke.json
 
 # Local switchboard routing and authentication state
 .identity_phone/
+
+# Interop: secret store and Culture Commons local state must never be committed
+.identityos/secrets/
+.identityos/culture_commons/
+
+# Runtime mailbox state (never commit)
+.identity_mailbox/
+
+# Browser profiles and runtime state
+browser_profiles/
+*.sqlite
+*.db
+
+# Screenshots and downloads
+screenshots/
+downloads/
+.identityos/private/
+# Gmail push OAuth credentials (documented in deploy/README.md)
+.gmail_push.env
