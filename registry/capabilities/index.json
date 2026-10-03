@@ -54,9 +54,9 @@
       "id": "web",
       "name": "Web",
       "version": "1.0.0",
-      "description": "Fetch web pages and extract text from URLs",
+      "description": "Fetch web pages, search the web, and extract text from URLs",
       "author": "IdentityOS",
-      "skills": 2,
+      "skills": 3,
       "permissions": [
         "public"
       ],
@@ -68,7 +68,7 @@
       "version": "1.0.0",
       "description": "Person-like web surfing: search, score usefulness, open pages, click/type/login, authenticated sessions",
       "author": "IdentityOS",
-      "skills": 37,
+      "skills": 39,
       "permissions": [
         "public",
         "network",

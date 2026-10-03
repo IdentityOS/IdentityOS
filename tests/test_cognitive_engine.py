@@ -1,6 +1,11 @@
 """Tests for core.cognitive_engine module."""
 
-from core.cognitive_engine import ComposedContext, ContextComposer, SessionMode
+from core.cognitive_engine import (
+    ComposedContext,
+    ContextComposer,
+    SessionMode,
+    cap_custom_block_overage,
+)
 from core.identity import IdentitySpec
 from core.memory import MemoryFragment, MemoryStore, MemoryType
 from core.relationships import IdentityGraph
@@ -91,3 +96,29 @@ class TestSessionModePrompting:
         ctx = ComposedContext(identity_block="I", memory_block="M", skills_block="S")
         rendered = ctx.render(separator="|")
         assert rendered == "I|M|S"
+
+    def test_cap_custom_block_overage_trims_largest_custom_block(self):
+        """Grounding arrives post-compose as a custom block; without a cap it
+        pushed chat prompts past Groq's 8k TPM tier (observed 8.8k)."""
+        ctx = ComposedContext(identity_block="id", memory_block="m" * 100)
+        ctx.custom_blocks["self_knowledge"] = "g" * 1000
+        ctx.custom_blocks["executive_state"] = "e" * 100
+        cap_custom_block_overage(ctx, max_tokens=100)  # 400 char budget
+        assert len(ctx.custom_blocks["self_knowledge"]) < 1000
+        assert ctx.custom_blocks["executive_state"] == "e" * 100
+        assert "<truncated" in ctx.custom_blocks["self_knowledge"] or "truncated" in ctx.custom_blocks["self_knowledge"]
+        assert ctx.identity_block == "id"
+        assert len(ctx.render()) <= 400
+
+    def test_cap_custom_block_overage_noop_within_budget(self):
+        ctx = ComposedContext(identity_block="small")
+        ctx.custom_blocks["self_knowledge"] = "small too"
+        cap_custom_block_overage(ctx, max_tokens=100)
+        assert ctx.custom_blocks["self_knowledge"] == "small too"
+
+    def test_custom_blocks_within_budget_untouched(self):
+        ctx = ComposedContext(
+            identity_block="id",
+            custom_blocks={"self_knowledge": "grounding"},
+        )
+        assert "grounding" in ctx.render()

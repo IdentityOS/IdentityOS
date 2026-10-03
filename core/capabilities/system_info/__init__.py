@@ -12,6 +12,7 @@ from core.capabilities.result import CapabilityResult
 
 @register
 class SystemInfoCapability(Capability):
+    inspection_readiness = "ready"
     id = "system_info"
     name = "System Information"
     version = "1.0.0"

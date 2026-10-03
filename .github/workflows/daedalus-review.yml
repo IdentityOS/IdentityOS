@@ -50,31 +50,28 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Download pull request diff as inert data
-        uses: actions/github-script@v7
+      - name: Materialize pull request diff as inert data
         env:
           DIFF_PATH: /tmp/pr.diff
-        with:
-          script: |
-            const fs = require('fs');
-            const response = await github.request(
-              'GET /repos/{owner}/{repo}/pulls/{pull_number}',
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                headers: {accept: 'application/vnd.github.v3.diff'}
-              }
-            );
-            if (typeof response.data !== 'string') {
-              throw new Error('GitHub did not return a textual pull request diff');
-            }
-            const bytes = Buffer.byteLength(response.data, 'utf8');
-            if (bytes > 5 * 1024 * 1024) {
-              throw new Error(`Pull request diff is too large to review safely (${bytes} bytes)`);
-            }
-            fs.writeFileSync(process.env.DIFF_PATH, response.data, {mode: 0o600});
-            core.info(`Downloaded ${response.data.split('\n').length} diff lines`);
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.clone_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fetch commit objects only. The untrusted tree is never checked out
+          # or executed; --no-ext-diff/--no-textconv keep diff generation inert.
+          git -c protocol.file.allow=never fetch \
+            --no-tags --depth=1 "$HEAD_REPOSITORY" "$HEAD_SHA"
+          umask 077
+          git diff --no-ext-diff --no-textconv --binary \
+            "$BASE_SHA" "$HEAD_SHA" > "$DIFF_PATH"
+          bytes=$(wc -c < "$DIFF_PATH")
+          if (( bytes > 5 * 1024 * 1024 )); then
+            echo "Pull request diff is too large to review safely ($bytes bytes)" >&2
+            exit 1
+          fi
+          echo "Materialized $(wc -l < "$DIFF_PATH") diff lines"
 
       - name: Record independent check evidence
         uses: actions/github-script@v7

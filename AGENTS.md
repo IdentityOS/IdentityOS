@@ -505,6 +505,34 @@ When an automated GitHub action makes a change, identify the reason and evidence
 
 ---
 
+# Autonomous Communication Boundary
+
+Engineering agents must never manually send, replay, authorize, or induce an
+email on Aster's behalf. This includes acceptance-test messages, follow-ups,
+replies, direct transport/API calls, and edits to cursors or job state whose
+purpose is to make a message send.
+
+Email decisions belong to Aster's durable operator loop. Agents may:
+
+- Implement and test the generic scheduling, diagnosis, recovery, policy, and
+  transport mechanisms with fake/local transports
+- Inspect live communication evidence and health without changing its outcome
+- Restart the configured runtime when explicitly requested
+- Add observability that explains why Aster did or did not act
+
+Agents may not substitute themselves for the runtime. A live message is valid
+only when Aster independently notices durable work, evaluates policy and
+controls, claims the job, invokes the configured transport, observes the real
+result, and persists the evidence. Never manually advance mailbox cursors,
+create fake inbound work, alter relationship state, or invoke a send command to
+obtain a desired demonstration result.
+
+If Aster fails to notice work, fix the general discovery/recovery mechanism and
+wait for the ordinary loop to establish the result. Do not manually trigger the
+specific message.
+
+---
+
 # Daedalus and Autonomous Agents
 
 Daedalus and other autonomous identities are engineering collaborators.

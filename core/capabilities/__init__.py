@@ -27,6 +27,11 @@ from . import worldmonitor  # noqa: F401
 from . import procedure_learning  # noqa: F401
 from . import reflex  # noqa: F401
 from . import embodiment  # noqa: F401
+from . import email  # noqa: F401
+from . import operations  # noqa: F401
+from . import mcp  # noqa: F401
+from . import a2a  # noqa: F401
+from . import culture_commons  # noqa: F401
 
 __all__ = [
     "Capability",
@@ -39,3 +44,5 @@ __all__ = [
     "EvidenceManager",
     "EvidenceReport",
 ]
+from core.capabilities import notification as _notif_mod  # noqa: F401
+from . import service_artifacts  # noqa: F401

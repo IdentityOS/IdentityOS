@@ -26,6 +26,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "prompt-toolkit>=3.0.0",
     "tzdata>=2024.1",
+    "pywebpush>=2.0.0",
 ]
 
 [project.optional-dependencies]

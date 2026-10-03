@@ -59,6 +59,7 @@ _UNIT_CONVERSIONS = {
 
 @register
 class CalcCapability(Capability):
+    inspection_readiness = "ready"
     id = "calc"
     name = "Calculator"
     version = "1.0.0"

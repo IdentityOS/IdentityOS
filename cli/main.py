@@ -46,6 +46,7 @@ from cli.registry_cmds import (
     cmd_explain,
     cmd_inspect_dashboard,
 )
+from cli.aster_cmds import cmd_aster_wrapper
 from cli.chat_commands import (  # noqa: F401  (re-exported for chat REPL + tests)
     ChatContext,
     dispatch_chat_command,
@@ -251,6 +252,72 @@ def _confirm(prompt: str) -> bool:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+
+def cmd_secret(args: argparse.Namespace) -> int:
+    """
+    Manage secret handles in the IdentityOS secret store.
+
+    The secret store uses opaque handles (e.g. culture-commons/aster) to reference
+    secrets. Plaintext secrets are never displayed, logged, or persisted in identity state.
+    Only the secret store at final execution time resolves handles to plaintext.
+    """
+    from core.secrets.store import SecretStore, default_secret_store_dir
+    from pathlib import Path
+
+    store_dir = default_secret_store_dir(args.project_root if hasattr(args, 'project_root') else ".")
+    store = SecretStore(store_dir)
+
+    if args.secret_command == "set":
+        # Use hidden input to prevent echoing
+        import getpass
+        try:
+            secret = getpass.getpass("Secret: ")
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return 1
+
+        if not secret.strip():
+            print("Error: secret cannot be empty", file=sys.stderr)
+            return 1
+
+        store.put(args.handle, secret)
+        print(f"Stored secret handle: secret://{args.handle}")
+        return 0
+
+    elif args.secret_command == "has":
+        exists = store.has(args.handle)
+        print(f"secret://{args.handle}")
+        print(f"status: {'provisioned' if exists else 'not provisioned'}")
+        if exists:
+            path = store._path(args.handle)
+            mode = path.stat().st_mode & 0o777
+            print(f"mode: {oct(mode)}")
+        return 0
+
+    elif args.secret_command == "list":
+        handles = store.handles()
+        if handles:
+            for h in handles:
+                print(f"secret://{h}")
+        else:
+            print("(no secrets provisioned)")
+        return 0
+
+    elif args.secret_command == "delete":
+        if not _confirm(f"Delete secret://{args.handle}?"):
+            print("Cancelled.")
+            return 0
+        if store.delete(args.handle):
+            print(f"Deleted secret://{args.handle}")
+        else:
+            print(f"Secret not found: {args.handle}")
+        return 0
+
+    else:
+        print("Usage: identity secret <set|has|list|delete>", file=sys.stderr)
+        return 1
+
 
 def cmd_create(args: argparse.Namespace) -> int:
     """
@@ -762,22 +829,28 @@ def _interactive_adapter_select():
 
     if _has("SAMBANOVA_API_KEY"):
         candidates.append(
-            _probe_adapter("SambaNova", SambaNovaAdapter, os.environ.get("IDENTITY_MODEL", "DeepSeek-V3.1"))
+            _probe_adapter("SambaNova", SambaNovaAdapter,
+                           os.environ.get("SAMBANOVA_MODEL", "DeepSeek-V3.1"))
         )
 
     if _has("CEREBRAS_API_KEY"):
         candidates.append(
-            _probe_adapter("Cerebras", CerebrasAdapter, os.environ.get("IDENTITY_MODEL", "llama3.1-8b"))
+            # Provider-specific model env only. IDENTITY_MODEL names the local
+            # model (e.g. an Ollama tag); sending it to Cerebras is a 404.
+            _probe_adapter("Cerebras", CerebrasAdapter,
+                           os.environ.get("CEREBRAS_MODEL", "gpt-oss-120b"))
         )
 
     if os.environ.get("OPENROUTER_API_KEY"):
         candidates.append(
-            _probe_adapter("OpenRouter", OpenRouterAdapter, os.environ.get("IDENTITY_MODEL", "openai/gpt-4o"))
+            _probe_adapter("OpenRouter", OpenRouterAdapter,
+                           os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash"))
         )
 
     if os.environ.get("ANTHROPIC_API_KEY"):
         candidates.append(
-            _probe_adapter("Anthropic", AnthropicAdapter, os.environ.get("IDENTITY_MODEL", "claude-3-5-sonnet-20241022"))
+            _probe_adapter("Anthropic", AnthropicAdapter,
+                           os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"))
         )
 
     # Discover all OpenAI-compatible providers (OpenAI, Ollama, Gemini, NVIDIA, etc.)
@@ -1164,6 +1237,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_isp_install.add_argument("id", help="Pack id")
     p_isp_install.add_argument("--identity", required=True, help="Identity id to install on")
 
+
+    # secret
+    p_secret = sub.add_parser("secret", help="Secret store operations")
+    sec_sub = p_secret.add_subparsers(dest="secret_command", required=True)
+    p_sec_set = sec_sub.add_parser("set", help="Store a secret (hidden input)")
+    p_sec_set.add_argument("handle", help="Opaque handle (e.g. culture-commons/aster)")
+    p_sec_set.add_argument("--project-root", default=".", help="Project root for secret store location")
+    p_sec_has = sec_sub.add_parser("has", help="Check if a secret handle is provisioned")
+    p_sec_has.add_argument("handle", help="Opaque handle")
+    p_sec_has.add_argument("--project-root", default=".", help="Project root for secret store location")
+    p_sec_list = sec_sub.add_parser("list", help="List all provisioned secret handles")
+    p_sec_list.add_argument("--project-root", default=".", help="Project root for secret store location")
+    p_sec_del = sec_sub.add_parser("delete", help="Delete a secret")
+    p_sec_del.add_argument("handle", help="Opaque handle")
+    p_sec_del.add_argument("--project-root", default=".", help="Project root for secret store location")
+
+    # aster
+    from cli.aster_cmds import add_aster_parser
+
+    p_aster = sub.add_parser("aster", help="Aster autonomous operator commands")
+    add_aster_parser(p_aster)
+
+    from cli.service_cmds import add_service_parser
+    add_service_parser(sub.add_parser("services", help="Persistent identity services and internal credits"))
+    p_self = sub.add_parser("self", help="Read sanitized authoritative identity state")
+    p_self.add_argument("id")
+    p_self.add_argument("--store", default=DEFAULT_STORE)
+    p_self.add_argument("--backend", default=DEFAULT_BACKEND, choices=["json", "sqlite", "memory"])
+    p_self.add_argument("--section", action="append")
     return parser
 
 
@@ -1232,7 +1334,17 @@ def cmd_isp_wrapper(args: argparse.Namespace) -> int:
 # Entry point
 # ---------------------------------------------------------------------------
 
+from cli.service_cmds import run as cmd_services
+
+def cmd_self(args):
+    from core.self_knowledge import SelfKnowledge
+    print(json.dumps(SelfKnowledge(_get_storage(args), args.id).snapshot(args.section), indent=2, ensure_ascii=False))
+    return 0
+
+
 COMMAND_MAP = {
+    "self": cmd_self,
+    "services": cmd_services,
     "create": cmd_create,
     "inspect": cmd_inspect,
     "debug": cmd_debug,
@@ -1252,6 +1364,8 @@ COMMAND_MAP = {
     "registry": cmd_registry_wrapper,
     "cap": cmd_cap_wrapper,
     "isp": cmd_isp_wrapper,
+    "aster": cmd_aster_wrapper,
+    "secret": cmd_secret,
 }
 
 

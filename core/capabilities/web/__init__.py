@@ -43,6 +43,7 @@ class WebCapability(Capability):
     _SKILLS = [
         Skill(name="web.fetch", description="Fetch a URL and return its content as text", permission="public", input_schema=object_schema({"url": {"type": "string", "minLength": 1}}, required=("url",))),
         Skill(name="web.extract", description="Fetch a URL and extract clean text from HTML", permission="public", input_schema=object_schema({"url": {"type": "string", "minLength": 1}}, required=("url",))),
+        Skill(name="web.search", description="Search the web and return ranked results (title, url, snippet)", permission="network", input_schema=object_schema({"query": {"type": "string", "minLength": 1}, "limit": {"type": "integer"}}, required=("query",))),
     ]
 
     def skills(self) -> list[Skill]:
@@ -55,6 +56,7 @@ class WebCapability(Capability):
             dispatch = {
                 "web.fetch": self._fetch,
                 "web.extract": self._extract,
+                "web.search": self._search,
             }
             handler = dispatch.get(skill_name)
             if handler is None:
@@ -64,10 +66,27 @@ class WebCapability(Capability):
         except Exception as e:
             return CapabilityResult.fail("web", skill_name, type(e).__name__, str(e), source="HTTP fetch", duration_ms=(_time.monotonic() - _t0) * 1000)
 
+    def _github_headers(self, url: str) -> dict[str, str]:
+        """Authenticate GitHub API reads when a token is configured.
+
+        Unauthenticated GitHub API calls cap at 60/hour, which a discovery
+        loop exhausts in minutes; the token raises that to 5000/hour. The
+        token is only ever sent to api.github.com, never logged, and never
+        attached to non-GitHub requests.
+        """
+        import os
+
+        if "api.github.com" not in url:
+            return {}
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+        if not token or "PLACEHOLDER" in token.upper():
+            return {}
+        return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
     def _fetch(self, url: str = "", **kwargs: Any) -> dict[str, Any]:
         if not url:
             return {"error": "url is required"}
-        resp = self._client.get(url)
+        resp = self._client.get(url, headers=self._github_headers(url))
         resp.raise_for_status()
         return {
             "url": url,
@@ -80,7 +99,7 @@ class WebCapability(Capability):
     def _extract(self, url: str = "", **kwargs: Any) -> dict[str, Any]:
         if not url:
             return {"error": "url is required"}
-        resp = self._client.get(url)
+        resp = self._client.get(url, headers=self._github_headers(url))
         resp.raise_for_status()
         text = resp.text
         text = re.sub(r"<script\b[^>]*>.*?</script\b[^>]*>", "", text, flags=re.DOTALL | re.IGNORECASE)
@@ -93,3 +112,51 @@ class WebCapability(Capability):
             "extracted_text": text,
             "character_count": len(text),
         }
+
+    def _search(self, query: str = "", limit: int = 8, **kwargs: Any) -> dict[str, Any]:
+        if not query:
+            return {"error": "query is required"}
+        limit = max(1, min(int(limit or 8), 25))
+        resp = self._client.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; IdentityOS/2.0)"},
+        )
+        resp.raise_for_status()
+        html = resp.text
+        results: list[dict[str, Any]] = []
+        pattern = re.compile(
+            r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        snippet_pattern = re.compile(
+            r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(?P<snippet>.*?)</a>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        snippets = [self._clean(m.group("snippet")) for m in snippet_pattern.finditer(html)]
+        for index, match in enumerate(pattern.finditer(html)):
+            if len(results) >= limit:
+                break
+            url = self._decode_ddg(match.group("url"))
+            results.append({
+                "title": self._clean(match.group("title")),
+                "url": url,
+                "snippet": snippets[index] if index < len(snippets) else "",
+            })
+        return {"query": query, "results": results, "count": len(results)}
+
+    @staticmethod
+    def _clean(text: str) -> str:
+        text = re.sub(r"<[^>]+>", "", text or "")
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _decode_ddg(url: str) -> str:
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        if "uddg=" in url:
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            if "uddg" in params:
+                return unquote(params["uddg"][0])
+        return url

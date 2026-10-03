@@ -410,7 +410,11 @@ class OpenAIAdapter(BaseAdapter):
     def _get_client(self):
         if self._client is None:
             try:
+                import httpx
                 from openai import OpenAI, Timeout
+                # An explicit httpx client with a neutral User-Agent avoids
+                # provider-side bot filtering of the SDK's default headers
+                # (Groq's Cloudflare rejects the default with error 1010).
                 self._client = OpenAI(
                     api_key=self.api_key,
                     base_url=self.base_url,
@@ -422,10 +426,19 @@ class OpenAIAdapter(BaseAdapter):
                     # adapters. SDK retries would multiply the configured
                     # timeout and make fallback latency unpredictable.
                     max_retries=0,
+                    http_client=httpx.Client(
+                        headers={"User-Agent": "identityos-runtime/1.0"},
+                        timeout=httpx.Timeout(timeout=self.timeout, connect=5.0),
+                    ),
                 )
             except ImportError:
                 raise ImportError("openai package not found. Install with: pip install openai")
         return self._client
+
+    @property
+    def structured_output(self):
+        value = self.config.get("structured_output", "prompt_only")
+        return value if value in {"prompt_only", "json_object", "json_schema"} else "prompt_only"
 
     def generate(
         self,
@@ -439,6 +452,17 @@ class OpenAIAdapter(BaseAdapter):
     ) -> str:
         # Extract execute_tool from kwargs so it doesn't crash the OpenAI client API
         execute_tool = kwargs.pop("execute_tool", None)
+        schema = kwargs.pop("_response_schema", None)
+        budget = kwargs.pop("_generation_budget", None)
+        deadline = _time.monotonic() + max(0.1, float(budget)) if budget is not None else None
+        if deadline is not None:
+            retries = 1
+        if schema and not kwargs.get("tools"):
+            if self.structured_output == "json_schema":
+                kwargs["response_format"] = {"type": "json_schema", "json_schema": {
+                    "name": "identity_expression", "strict": True, "schema": schema}}
+            elif self.structured_output == "json_object":
+                kwargs["response_format"] = {"type": "json_object"}
         
         client = self._get_client()
         messages = [
@@ -476,8 +500,14 @@ class OpenAIAdapter(BaseAdapter):
             shrinks = 0
             while attempt < retries + shrinks:
                 attempt += 1
+                tools_enabled_for_request = bool(kwargs.get("tools")) and kwargs.get("tool_choice") != "none"
                 try:
                     request_kwargs = dict(kwargs)
+                    if deadline is not None:
+                        remaining = deadline - _time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("generation deadline reached")
+                        request_kwargs["timeout"] = min(remaining, float(request_kwargs.get("timeout", self.timeout)))
                     if tool_rounds >= self.max_tool_rounds or plain_text_recovery_used:
                         request_kwargs.pop("tools", None)
                         request_kwargs.pop("tool_choice", None)
@@ -742,6 +772,83 @@ class OpenAIAdapter(BaseAdapter):
         except Exception:
             return False
 
+    def generate_with_vision(
+        self,
+        context: str,
+        user_input: str,
+        identity: Any,
+        image_base64: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        retries: int = 3,
+        **kwargs
+    ) -> str:
+        """
+        Generate a response from the LLM with vision (image) input.
+
+        Uses OpenAI-compatible vision API (GPT-4o, GPT-4 Turbo with vision, etc.)
+        """
+        client = self._get_client()
+        model = self.model or "gpt-4o"
+        last_exc = None
+        effective_max = max_tokens or self.max_tokens
+
+        # Build messages with image
+        messages = [
+            {"role": "system", "content": context},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_input},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_base64}",
+                            "detail": "high"
+                        }
+                    }
+                ]
+            }
+        ]
+
+        for attempt in range(retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature or self.temperature,
+                    max_tokens=effective_max,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                msg_lower = msg.lower()
+                if "rate limit" in msg_lower or "429" in msg:
+                    if attempt < retries:
+                        wait = 2 ** attempt * 5
+                        logger.warning("Rate limited, retrying in %ds...", wait)
+                        _time.sleep(wait)
+                    continue
+                if _is_token_limit_error(msg) and effective_max and effective_max > 256:
+                    effective_max = max(256, effective_max // 2)
+                    logger.warning(
+                        "Token-limit rejection (max_tokens shrunk to %d): %.120s",
+                        effective_max, msg,
+                    )
+                    continue
+                raise RuntimeError(
+                    f"Adapter vision error (model={model!r}, base_url={self.base_url!r}): {msg}"
+                ) from exc
+
+        if response is None:
+            raise RuntimeError(f"Adapter vision error: no response from {model}")
+
+        choice = response.choices[0]
+        message = choice.message
+        content = message.content or ""
+        return content
+
 
 class AnthropicAdapter(BaseAdapter):
     def __init__(
@@ -771,7 +878,11 @@ class AnthropicAdapter(BaseAdapter):
         kwargs.pop("execute_tool", None)
         kwargs.pop("tools", None)
         kwargs.pop("tool_choice", None)
+        kwargs.pop("_response_schema", None)
+        budget = kwargs.pop("_generation_budget", None)
         client = self._get_client()
+        if budget is not None:
+            client = client.with_options(timeout=max(0.1, float(budget)), max_retries=0)
         model = self.model or "claude-3-5-sonnet-20241022"
         try:
             response = client.messages.create(

@@ -165,7 +165,10 @@ class SessionState:
 
     def create_checkpoint(self) -> dict:
         """Create a checkpoint of current session state."""
+        import uuid
         checkpoint = self.serialize_state()
+        checkpoint["checkpoint_id"] = str(uuid.uuid4())
+        checkpoint["created_at"] = datetime.now().isoformat()
         self.checkpoints.append(checkpoint)
         # Trim old checkpoints
         if len(self.checkpoints) > self.max_checkpoints:
@@ -296,6 +299,113 @@ def identity_browser_dir(storage_root: str | Path, identity_id: str) -> Path:
     return Path(storage_root).resolve() / _safe_component(identity_id) / "browser"
 
 
+def checkpoint_dir(
+    storage_root: str | Path,
+    identity_id: str,
+    execution_scope: str = "sdk",
+    browser_type: str = "chromium",
+    user_profile_dir: Optional[Path] = None,
+) -> Path:
+    """Return the checkpoint directory for a session."""
+    base = session_dir(storage_root, identity_id, execution_scope)
+    if browser_type != "chromium":
+        base = base / f"browser-{browser_type}"
+    if user_profile_dir:
+        profile_hash = hashlib.sha256(str(user_profile_dir).encode()).hexdigest()[:8]
+        base = base / f"profile-{profile_hash}"
+    checkpoint_path = base / "checkpoints"
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+    try:
+        checkpoint_path.chmod(0o700)
+    except OSError:
+        pass
+    return checkpoint_path
+
+
+def _checkpoint_file(checkpoint_dir: Path, checkpoint_id: str) -> Path:
+    """Return the checkpoint file path."""
+    return checkpoint_dir / f"{checkpoint_id}.json"
+
+
+def save_checkpoint_to_disk(
+    identity_id: str,
+    checkpoint: dict,
+    *,
+    storage_root: str | Path = ".identity_store",
+    execution_scope: str = "sdk",
+    browser_type: str = "chromium",
+    user_profile_dir: Optional[Path] = None,
+) -> str:
+    """Save a checkpoint to disk and return the checkpoint ID."""
+    import uuid
+    checkpoint_id = checkpoint.get("checkpoint_id") or str(uuid.uuid4())
+    checkpoint["checkpoint_id"] = checkpoint_id
+    checkpoint["saved_at"] = datetime.now().isoformat()
+
+    ckpt_dir = checkpoint_dir(storage_root, identity_id, execution_scope, browser_type, user_profile_dir)
+    ckpt_file = _checkpoint_file(ckpt_dir, checkpoint_id)
+
+    try:
+        ckpt_file.write_text(json.dumps(checkpoint, default=str))
+        # Keep only last 10 checkpoints on disk
+        _prune_old_checkpoints(ckpt_dir, max_keep=10)
+        return checkpoint_id
+    except Exception as e:
+        return ""
+
+
+def _prune_old_checkpoints(checkpoint_dir: Path, max_keep: int = 10) -> None:
+    """Remove old checkpoint files, keeping only the most recent."""
+    try:
+        files = sorted(checkpoint_dir.glob("*.json"), key=lambda f: f.stat().st_mtime)
+        for f in files[:-max_keep]:
+            f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def load_checkpoints_from_disk(
+    identity_id: str,
+    *,
+    storage_root: str | Path = ".identity_store",
+    execution_scope: str = "sdk",
+    browser_type: str = "chromium",
+    user_profile_dir: Optional[Path] = None,
+) -> list[dict]:
+    """Load all checkpoints from disk, newest first."""
+    ckpt_dir = checkpoint_dir(storage_root, identity_id, execution_scope, browser_type, user_profile_dir)
+    checkpoints = []
+    try:
+        for ckpt_file in sorted(ckpt_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(ckpt_file.read_text())
+                checkpoints.append(data)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return checkpoints
+
+
+def delete_checkpoint_from_disk(
+    identity_id: str,
+    checkpoint_id: str,
+    *,
+    storage_root: str | Path = ".identity_store",
+    execution_scope: str = "sdk",
+    browser_type: str = "chromium",
+    user_profile_dir: Optional[Path] = None,
+) -> bool:
+    """Delete a specific checkpoint from disk."""
+    ckpt_dir = checkpoint_dir(storage_root, identity_id, execution_scope, browser_type, user_profile_dir)
+    ckpt_file = _checkpoint_file(ckpt_dir, checkpoint_id)
+    try:
+        ckpt_file.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
 def _session_key(
     storage_root: str | Path,
     identity_id: str,
@@ -418,6 +528,18 @@ def ensure_session(
                 # Initialize multi-tab support
                 state.pages = {state.active_tab_id: state.page}
                 state.started = True
+
+                # Load checkpoints from disk
+                disk_checkpoints = load_checkpoints_from_disk(
+                    identity_id,
+                    storage_root=storage_root,
+                    execution_scope=execution_scope,
+                    browser_type=browser_type,
+                    user_profile_dir=user_profile_dir,
+                )
+                if disk_checkpoints:
+                    state.checkpoints = disk_checkpoints
+
                 _SESSIONS[key] = state
                 return state
             except Exception:
@@ -593,22 +715,24 @@ def list_tabs(
     user_profile_dir: Optional[Path] = None,
 ) -> list[dict]:
     """List all tabs in the session."""
-    state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
-    if not state or not state.started:
-        return []
-    with state.lock:
-        tabs = []
-        for tab_id, page in state.pages.items():
-            try:
-                tabs.append({
-                    "tab_id": tab_id,
-                    "url": page.url,
-                    "title": page.title(),
-                    "active": tab_id == state.active_tab_id,
-                })
-            except Exception:
-                pass
-        return tabs
+    def _list() -> list[dict]:
+        state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
+        if not state or not state.started:
+            return []
+        with state.lock:
+            tabs = []
+            for tab_id, page in state.pages.items():
+                try:
+                    tabs.append({
+                        "tab_id": tab_id,
+                        "url": page.url,
+                        "title": page.title(),
+                        "active": tab_id == state.active_tab_id,
+                    })
+                except Exception:
+                    pass
+            return tabs
+    return run_in_browser_thread(_list)
 
 
 # ─── Checkpoint Support ───────────────────────────────────────────────────
@@ -626,7 +750,17 @@ def create_checkpoint(
         state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
         if not state or not state.started:
             return {"success": False, "error": "No active session"}
-        return {"success": True, "checkpoint": state.create_checkpoint()}
+        checkpoint = state.create_checkpoint()
+        # Save to disk
+        checkpoint_id = save_checkpoint_to_disk(
+            identity_id, checkpoint,
+            storage_root=storage_root,
+            execution_scope=execution_scope,
+            browser_type=browser_type,
+            user_profile_dir=user_profile_dir,
+        )
+        checkpoint["checkpoint_id"] = checkpoint_id
+        return {"success": True, "checkpoint": checkpoint}
     return run_in_browser_thread(_create)
 
 
@@ -644,11 +778,41 @@ def restore_checkpoint(
         state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
         if not state or not state.started:
             return {"success": False, "error": "No active session"}
-        if not state.checkpoints:
+
+        # Try in-memory checkpoints first, then disk
+        checkpoint = None
+        if state.checkpoints:
+            checkpoint = state.checkpoints[checkpoint_index]
+        else:
+            # Load from disk
+            disk_checkpoints = load_checkpoints_from_disk(
+                identity_id,
+                storage_root=storage_root,
+                execution_scope=execution_scope,
+                browser_type=browser_type,
+                user_profile_dir=user_profile_dir,
+            )
+            if disk_checkpoints:
+                checkpoint = disk_checkpoints[0 if checkpoint_index == -1 else checkpoint_index]
+
+        if not checkpoint:
             return {"success": False, "error": "No checkpoints available"}
-        checkpoint = state.checkpoints[checkpoint_index]
+
         success = state.restore_checkpoint(checkpoint)
-        return {"success": success}
+        if not success:
+            return {"success": False, "error": "Failed to restore checkpoint"}
+
+        # Navigate to last_url if available
+        last_url = checkpoint.get("last_url")
+        if last_url:
+            try:
+                state.page.goto(last_url, wait_until="domcontentloaded", timeout=30000)
+                state.last_url = state.page.url
+                success = True
+            except Exception as e:
+                return {"success": False, "error": f"Checkpoint restored but navigation failed: {e}"}
+
+        return {"success": success, "restored_url": last_url, "checkpoint_id": checkpoint.get("checkpoint_id")}
     return run_in_browser_thread(_restore)
 
 
@@ -661,13 +825,38 @@ def list_checkpoints(
     user_profile_dir: Optional[Path] = None,
 ) -> list[dict]:
     """List available checkpoints for a session."""
+    # First check in-memory
     state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
-    if not state:
-        return []
-    return [
-        {"index": i, "timestamp": cp.get("timestamp"), "url": cp.get("last_url")}
-        for i, cp in enumerate(state.checkpoints)
+    in_memory = []
+    if state:
+        in_memory = [
+            {"index": i, "timestamp": cp.get("timestamp"), "url": cp.get("last_url"), "checkpoint_id": cp.get("checkpoint_id"), "source": "memory"}
+            for i, cp in enumerate(state.checkpoints)
+        ]
+
+    # Then check disk
+    disk_checkpoints = load_checkpoints_from_disk(
+        identity_id,
+        storage_root=storage_root,
+        execution_scope=execution_scope,
+        browser_type=browser_type,
+        user_profile_dir=user_profile_dir,
+    )
+    disk = [
+        {"index": i, "timestamp": cp.get("timestamp"), "url": cp.get("last_url"), "checkpoint_id": cp.get("checkpoint_id"), "source": "disk"}
+        for i, cp in enumerate(disk_checkpoints)
     ]
+
+    # Merge, preferring in-memory for same checkpoint_id
+    seen = set()
+    result = []
+    for cp in in_memory + disk:
+        cid = cp.get("checkpoint_id")
+        if cid and cid not in seen:
+            seen.add(cid)
+            result.append(cp)
+
+    return result
 
 
 def export_session(
@@ -679,10 +868,12 @@ def export_session(
     user_profile_dir: Optional[Path] = None,
 ) -> dict:
     """Export complete session state for backup/migration."""
-    state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
-    if not state or not state.started:
-        return {"success": False, "error": "No active session"}
-    return {"success": True, "session": state.serialize_state()}
+    def _export() -> dict:
+        state = get_session(identity_id, storage_root=storage_root, execution_scope=execution_scope, browser_type=browser_type, user_profile_dir=user_profile_dir)
+        if not state or not state.started:
+            return {"success": False, "error": "No active session"}
+        return {"success": True, "session": state.serialize_state()}
+    return run_in_browser_thread(_export)
 
 
 def import_session(

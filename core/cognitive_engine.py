@@ -39,6 +39,12 @@ class ComposedContext:
     time_awareness_block: str = ""
     custom_blocks: Dict[str, str] = field(default_factory=dict)
     evidence_footer_block: str = ""
+    # Provenance of what the context actually selected, by source:
+    #   "memory"  — long-term/semantic fragments included in the prompt
+    #   "recent"  — working-memory (recent conversation) fragment IDs
+    #   "facts"   — identity fact-store record IDs rendered into the prompt
+    # Lets callers prove which context a generation was grounded in.
+    source_ids: Dict[str, list] = field(default_factory=dict)
 
     def render(self, separator: str = "\n\n") -> str:
         sections = []
@@ -65,6 +71,30 @@ class ComposedContext:
 
     def token_estimate(self, chars_per_token: float = 4.0) -> int:
         return int(len(self.render()) / chars_per_token)
+
+def cap_custom_block_overage(ctx: "ComposedContext", max_tokens: int) -> Optional[str]:
+    """Truncate the largest custom block to bring the render back under budget.
+
+    Called after callers attach custom blocks (which happens after compose()).
+    Whole-block trimming would drop mandatory directive blocks first, so the
+    largest custom block gets a partial truncation instead. Keeps standard
+    blocks intact; an over-budget *request* is a hard provider failure while
+    a shorter grounding snapshot is honest and still useful.
+    """
+    if max_tokens <= 0 or not ctx.custom_blocks:
+        return None
+    marker = "\n[... truncated ...]"
+    overage = len(ctx.render()) - max_tokens * 4
+    if overage <= 0:
+        return None
+    name = max(ctx.custom_blocks, key=lambda k: len(ctx.custom_blocks[k]))
+    block = ctx.custom_blocks[name]
+    keep = len(block) - overage - len(marker)
+    if keep <= 0:
+        return None
+    ctx.custom_blocks[name] = block[:keep] + marker
+    return name
+
 
 class ContextComposer:
     def __init__(
@@ -120,7 +150,7 @@ class ContextComposer:
         if self.include_identity:
             ctx.identity_block = self._render_identity(identity)
         if self.include_identity_evolution:
-            ctx.identity_evolution_block = self._render_identity_evolution(identity, fact_store=fact_store)
+            ctx.identity_evolution_block = self._render_identity_evolution(identity, fact_store=fact_store, ctx=ctx)
 
         if session_mode and session_mode != SessionMode.NORMAL:
             label_map = {
@@ -312,6 +342,7 @@ class ContextComposer:
                 top_k_memories,
                 session_id,
                 user_id,
+                ctx=ctx,
             )
 
         if self.include_skills:
@@ -384,51 +415,79 @@ class ContextComposer:
             ctx.evidence_footer_block = self._render_evidence_footer(evidence_results)
 
         if self.max_tokens > 0:
-            blocks = [
-                ("runtime_directives_block", ctx.runtime_directives_block),
-                ("identity_block", ctx.identity_block),
-                ("identity_evolution_block", ctx.identity_evolution_block),
-                ("user_knowledge_block", ctx.user_knowledge_block),
-                ("emotion_block", ctx.emotion_block),
-                ("session_mode_block", ctx.session_mode_block),
-                ("memory_block", ctx.memory_block),
-                ("installed_capabilities_block", ctx.installed_capabilities_block),
-                ("skills_block", ctx.skills_block),
-                ("goals_block", ctx.goals_block),
-                ("intentions_block", ctx.intentions_block),
-                ("relationships_block", ctx.relationships_block),
-                ("motivations_block", ctx.motivations_block),
-                ("timeline_block", ctx.timeline_block),
-                ("synthesis_block", ctx.synthesis_block),
-                ("evidence_footer_block", ctx.evidence_footer_block),
-            ]
-            for _name, _block in list(ctx.custom_blocks.items()):
-                blocks.append((f"custom:{_name}", _block))
-
-            total_chars = sum(len(b) for _, b in blocks)
-            budget_chars = self.max_tokens * 4
-            if total_chars > budget_chars:
-                overage = total_chars - budget_chars
-                _protected = frozenset({"identity_block", "user_knowledge_block"})
-                blocks.sort(key=lambda x: -len(x[1]))
-                for name, block in blocks:
-                    if overage <= 0:
-                        break
-                    if not block:
-                        continue
-                    if name in _protected:
-                        continue
-                    if isinstance(name, str) and name.startswith("custom:"):
-                        continue
-                    b_len = len(block)
-                    if b_len <= overage:
-                        setattr(ctx, name, "")
-                        overage -= b_len
-                    else:
-                        keep = b_len - overage
-                        setattr(ctx, name, block[:keep] + "\n[... truncated ...]")
-                        overage = 0
+            self.apply_budget(ctx, self.max_tokens)
         return ctx
+
+    @staticmethod
+    def apply_budget(ctx: "ComposedContext", max_tokens: int) -> None:
+        """Trim *ctx* in place to roughly ``max_tokens``.
+
+        Standard blocks go first (largest first), protected identity and user
+        knowledge stay intact, and custom blocks are trimmed last — they carry
+        potentially unbounded grounding snapshots that otherwise push the
+        composed prompt past provider token budgets (live finding: an 8.8k
+        token request against an 8k-TPM tier).
+        """
+        blocks = [
+            ("runtime_directives_block", ctx.runtime_directives_block),
+            ("identity_block", ctx.identity_block),
+            ("identity_evolution_block", ctx.identity_evolution_block),
+            ("user_knowledge_block", ctx.user_knowledge_block),
+            ("emotion_block", ctx.emotion_block),
+            ("session_mode_block", ctx.session_mode_block),
+            ("memory_block", ctx.memory_block),
+            ("installed_capabilities_block", ctx.installed_capabilities_block),
+            ("skills_block", ctx.skills_block),
+            ("goals_block", ctx.goals_block),
+            ("intentions_block", ctx.intentions_block),
+            ("relationships_block", ctx.relationships_block),
+            ("motivations_block", ctx.motivations_block),
+            ("timeline_block", ctx.timeline_block),
+            ("synthesis_block", ctx.synthesis_block),
+            ("evidence_footer_block", ctx.evidence_footer_block),
+        ]
+        for _name, _block in list(ctx.custom_blocks.items()):
+            blocks.append((f"custom:{_name}", _block))
+
+        total_chars = sum(len(b) for _, b in blocks)
+        budget_chars = max_tokens * 4
+        if total_chars <= budget_chars:
+            return
+        overage = total_chars - budget_chars
+        _protected = frozenset({"identity_block", "user_knowledge_block"})
+        blocks.sort(key=lambda x: -len(x[1]))
+        for name, block in blocks:
+            if overage <= 0:
+                break
+            if not block:
+                continue
+            if name in _protected:
+                continue
+            if name.startswith("custom:"):
+                continue  # trimmed in the second pass below
+            b_len = len(block)
+            if b_len <= overage:
+                setattr(ctx, name, "")
+                overage -= b_len
+            else:
+                keep = b_len - overage
+                setattr(ctx, name, block[:keep] + "\n[... truncated ...]")
+                overage = 0
+        if overage <= 0:
+            return
+        for key in sorted(ctx.custom_blocks, key=lambda k: -len(ctx.custom_blocks[k])):
+            if overage <= 0:
+                break
+            block = ctx.custom_blocks[key]
+            if not block:
+                continue
+            keep = len(block) - overage
+            if keep <= 0:
+                ctx.custom_blocks[key] = ""
+                overage -= len(block)
+            else:
+                ctx.custom_blocks[key] = block[:keep] + "\n[... truncated ...]"
+                overage = 0
 
     def _render_evidence_footer(self, evidence_results: list[dict]) -> str:
         lines = ["---", "### Evidence Sources"]
@@ -478,7 +537,8 @@ class ContextComposer:
         return "\n".join(lines)
 
     def _render_identity_evolution(
-        self, identity: "IdentitySpec", fact_store: Optional[Any] = None
+        self, identity: "IdentitySpec", fact_store: Optional[Any] = None,
+        ctx: Optional["ComposedContext"] = None,
     ) -> str:
         if fact_store is None:
             return ""
@@ -491,7 +551,10 @@ class ContextComposer:
         active_facts = fact_store.active()
         if active_facts:
             has_any = True
+            rendered_ids = ctx.source_ids.setdefault("facts", []) if ctx is not None else []
             for f in active_facts:
+                if getattr(f, "id", None):
+                    rendered_ids.append(f.id)
                 confidence_pct = int(f.confidence * 100)
                 reinforced = f" (reinforced {f.times_reinforced}x)" if f.times_reinforced > 0 else ""
                 lines.append(
@@ -504,6 +567,11 @@ class ContextComposer:
         if active_prefs:
             has_any = True
             lines.append("Preferences:")
+            if ctx is not None:
+                rendered_ids = ctx.source_ids.setdefault("facts", [])
+                for f in active_prefs:
+                    if getattr(f, "id", None):
+                        rendered_ids.append(f.id)
             for f in active_prefs:
                 label = f.field.split(".")[-1].replace("_", " ")
                 lines.append(f"  - {label}: {f.value}")
@@ -574,6 +642,7 @@ class ContextComposer:
         top_k: int,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        ctx: Optional["ComposedContext"] = None,
     ) -> str:
         if identity_id and user_id is not None:
             all_frags = store.by_user(identity_id, user_id)
@@ -598,6 +667,10 @@ class ContextComposer:
         
         if working_memory:
             lines.append("## Recent Conversation (Working Memory)")
+            if ctx is not None:
+                ctx.source_ids.setdefault("recent", []).extend(
+                    f.id for f in working_memory if f.id
+                )
             for frag in reversed(working_memory):
                 lines.append(f"  {frag.content}")
             lines.append("")
@@ -613,6 +686,10 @@ class ContextComposer:
             relevant_past = [(frag, sc) for frag, sc in scored[:top_k] if sc > 1.5]
             if relevant_past:
                 lines.append("## Relevant Past Memories")
+                if ctx is not None:
+                    ctx.source_ids.setdefault("memory", []).extend(
+                        frag.id for frag, _ in relevant_past if frag.id
+                    )
                 for frag, sc in relevant_past:
                     lines.append(f"  [{frag.memory_type.value.upper()}] {frag.content}")
                 lines.append("")
@@ -624,6 +701,10 @@ class ContextComposer:
                 scored = [(f, self._score_memory(f, query)) for f in current_frags]
                 scored.sort(key=lambda x: x[1], reverse=True)
                 lines.append("## This Conversation")
+                if ctx is not None:
+                    ctx.source_ids.setdefault("memory", []).extend(
+                        f.id for f, _ in scored[:top_k] if f.id
+                    )
                 for frag, sc in scored[:top_k]:
                     lines.append(f"  [{frag.memory_type.value.upper()}] {frag.content}")
                 lines.append("")

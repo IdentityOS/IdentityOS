@@ -140,6 +140,11 @@ class GroqAdapter(OpenAIAdapter):
         """Bound one call while honoring an explicitly enlarged cooldown wait."""
         return max(45.0, self._MAX_COOLDOWN_WAIT + 15.0)
 
+    @property
+    def structured_output(self):
+        # Groq documents strict output for these models; tools remain prompt-only.
+        return "json_schema" if self.model in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"} else "json_object"
+
     def generate(
         self,
         context: str,
@@ -149,6 +154,10 @@ class GroqAdapter(OpenAIAdapter):
         max_tokens: Optional[int] = None,
         **kwargs
     ) -> str:
+        # Contract requests use one bounded attempt per provider, without key-rotation replay.
+        if "_generation_budget" in kwargs:
+            return super().generate(context, user_input, identity, temperature=temperature,
+                                    max_tokens=max_tokens, retries=1, **kwargs)
         last_error = None
         now = time.time()
         # Interactive callers keep the default 45-second bound.  A benchmark

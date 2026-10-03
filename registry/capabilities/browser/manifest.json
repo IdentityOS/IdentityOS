@@ -387,7 +387,7 @@
     },
     {
       "name": "browser.list_tabs",
-      "description": "List tabs in Comet's isolated automated browser session. This is NOT the user's own Firefox — for the user's real open tabs use browser.live.list_tabs",
+      "description": "List tabs in Comet's isolated automated browser session. This is NOT the user's own Firefox \u2014 for the user's real open tabs use browser.live.list_tabs",
       "permission": "browser:read",
       "effect": "read",
       "input_schema": {
@@ -747,6 +747,93 @@
         "required": [
           "tab_id",
           "key"
+        ]
+      }
+    },
+    {
+      "name": "browser.autonomous_task",
+      "description": "Execute an autonomous browser task from a high-level goal. The planner observes, reasons, acts, and verifies until the goal is achieved or escalation is needed.",
+      "permission": "browser:write",
+      "effect": "execute",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_steps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          },
+          "allowed_effects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "READ_ONLY",
+              "REVERSIBLE"
+            ]
+          },
+          "stop_conditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 3600,
+            "default": 300
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "goal"
+        ]
+      }
+    },
+    {
+      "name": "browser.wait_for_human",
+      "description": "Pause autonomous execution and wait for human intervention (CAPTCHA, MFA, ambiguous target, etc.). Provide a reason and optional screenshot.",
+      "permission": "browser:write",
+      "effect": "escalate",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "escalation_type": {
+            "type": "string",
+            "enum": [
+              "CAPTCHA",
+              "MFA",
+              "AUTH_REQUIRED",
+              "AMBIGUOUS_TARGET",
+              "CONSEQUENTIAL_ACTION",
+              "PAYMENT_CONFIRMATION",
+              "PERMISSION_REQUIRED",
+              "MANUAL_INTERACTION",
+              "UNKNOWN_BLOCKER"
+            ]
+          },
+          "screenshot_path": {
+            "type": "string"
+          },
+          "resume_token": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "escalation_type"
         ]
       }
     }

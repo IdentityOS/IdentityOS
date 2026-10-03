@@ -11,6 +11,7 @@ from core.capabilities.result import CapabilityResult
 
 @register
 class TextCapability(Capability):
+    inspection_readiness = "ready"
     id = "text"
     name = "Text Processing"
     version = "1.0.0"

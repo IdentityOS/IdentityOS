@@ -67,6 +67,17 @@ class Capability(ABC):
     def __init__(self, config: Optional[dict] = None) -> None:
         self._config = config or {}
 
+    @classmethod
+    def inspect_installation(cls, config: dict) -> dict:
+        """Pure declaration for read-only introspection; never instantiate/install.
+
+        Dynamic capabilities may override this with a bounded, local descriptor.
+        UNKNOWN means no readiness evidence, not a failed invocation.
+        """
+        return {"skills": list(getattr(cls, "_SKILLS", [])),
+                "readiness": getattr(cls, "inspection_readiness", "unknown"),
+                "complete": hasattr(cls, "_SKILLS")}
+
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     @abstractmethod
@@ -109,6 +120,7 @@ class Capability(ABC):
         skill_name: str,
         *,
         execution_scope: Optional[str] = None,
+        adapter: Any = None,
         **params: Any,
     ) -> Any:
         """Execute with an optional runtime/user isolation scope.
@@ -116,6 +128,9 @@ class Capability(ABC):
         Most capabilities are stateless and can ignore the scope. Stateful
         capabilities may override this without leaking transport metadata into
         their public model-facing parameter schema.
+
+        Args:
+            adapter: Optional model adapter for vision/multimodal operations.
         """
         return self.call(skill_name, **params)
 
