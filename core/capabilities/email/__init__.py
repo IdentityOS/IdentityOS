@@ -56,13 +56,15 @@ class CapabilityTransport:
     def send(self, *, to: str, subject: str, body: str, thread_id: str = "",
               in_reply_to: str = "", references=None, message_id: str = "",
               sender: str = "", sender_display_name: str = "", reply_to: str = "",
-              html_body: str = "") -> dict[str, Any]:
+              html_body: str = "",
+              attachments: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
         result = self._registry.call(
             self._identity_id, "email.send",
             to=to, subject=subject, body=body, thread_id=thread_id,
             in_reply_to=in_reply_to, references=references, message_id=message_id,
             sender=sender, sender_display_name=sender_display_name,
             reply_to=reply_to, html_body=html_body,
+            attachments=list(attachments or []),
         )
         if not result.success:
             message = (result.error or {}).get("message", "email.send denied")
