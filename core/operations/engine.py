@@ -1800,7 +1800,9 @@ class OperationsEngine:
         recipient = next((a for a in addresses if not a.lower().endswith("@identityos")), None)
         if recipient is None:
             return None
-        # Attachment: an explicit filesystem path in the instruction.
+        # Attachment: an explicit filesystem path in the instruction. A missing
+        # file never blocks the send, and the compose prompt names only what
+        # actually attaches so no claim is fabricated.
         paths = re.findall(r"(?:/[A-Za-z0-9._~/-]+)+\.[A-Za-z0-9]{2,4}", body_text)
         attachments = []
         for path in paths:
@@ -1827,9 +1829,13 @@ class OperationsEngine:
             )
             self.store.add_relationship(relationship)
 
-        # Aster composes from the instruction's substance.
+        # Aster composes from the instruction's substance. The compose prompt
+        # names the attachments that ACTUALLY exist — the model once claimed
+        # "I've attached the contract" for a file that was skipped, which is
+        # exactly the fabrication the voice rules exist to prevent.
         subject, outreach_body = self._compose_principal_directed(
             inbound, relationship,
+            attachment_names=[a["filename"] for a in attachments],
         )
         if not outreach_body:
             return self._settle_principal(
@@ -1886,11 +1892,16 @@ class OperationsEngine:
             notify=False,
         )
 
-    def _compose_principal_directed(self, inbound: Message, relationship: Any) -> tuple[str, str]:
+    def _compose_principal_directed(
+        self, inbound: Message, relationship: Any,
+        attachment_names: Optional[list[str]] = None,
+    ) -> tuple[str, str]:
         """Aster drafts the outreach from the instruction's substance.
 
         The model writes the email; the voice invariant is enforced downstream.
-        Returns (subject, body); body empty means generation unavailable.
+        The prompt names the attachments actually being sent so the model can
+        never claim an attachment that is not there. Returns (subject, body);
+        body empty means generation unavailable.
         """
         from .principal import thread_messages
 
@@ -1900,17 +1911,25 @@ class OperationsEngine:
                 repo_hint = token
                 break
         instruction_summary = (inbound.body or "")[:1200]
+        names = [n for n in (attachment_names or []) if n]
+        attachment_fact = (
+            f"Attachments actually being sent: {', '.join(names)}." if names
+            else "NO attachments are being sent with this email. Do not mention "
+                 "or claim any attachment."
+        )
         context = (
             "You are Aster, a persistent AI identity operating through IdentityOS, "
             "acting under delegated authority for your principal. You are composing "
             "an outreach email the principal explicitly directed. Be warm, direct, "
             "and specific. NEVER use em dashes. Never claim something happened unless "
-            "it did. Disclose that you are an AI identity on first contact."
+            "it did — including attachments. Disclose that you are an AI identity on "
+            "first contact."
         )
         user_input = (
             f"The principal's instruction: {instruction_summary}\n\n"
             f"Recipient: {relationship.display_name} <{relationship.email}>\n"
             + (f"Repository to share: {repo_hint}\n" if repo_hint else "")
+            + f"\n{attachment_fact}\n"
             + "\nWrite the email body. Sign it as Aster."
         )
         try:
