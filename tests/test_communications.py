@@ -405,3 +405,82 @@ def test_latency_segments_none_when_stages_missing():
     latency = job.latency_breakdown()
     assert latency["send_seconds"] is None
     assert latency["total_seconds"] is None
+
+
+# ── ecosystem map ───────────────────────────────────────────────────────
+
+
+def test_ecosystem_shows_core_team_and_excludes_test_artifacts(tmp_path):
+    from core.operations.ecosystem import ecosystem
+
+    backend = JSONFileBackend(root_dir=str(tmp_path / "store"))
+    backend.save("aster", "identity_spec", {"name": "Aster", "role": "Operator", "tagline": "t"})
+    backend.save("aster", "operations.presence", {
+        "status": "idle", "last_heartbeat": _iso(datetime.now(timezone.utc)),
+        "operator_pid": None, "activity": "observing",
+    })
+    backend.save("comet", "identity_spec", {"name": "Comet", "role": "", "tagline": ""})
+    backend.save("test_bot_thing", "identity_spec", {"name": "TestBot", "role": "", "tagline": ""})
+
+    payload = ecosystem(backend)
+    ids = [n["id"] for n in payload["nodes"]]
+    assert "aster" in ids and "comet" in ids
+    assert "test_bot_thing" not in ids, "test artifacts stay out of the core map"
+    assert payload["edges"], "the principal delegation edge exists"
+
+    with_artifacts = ecosystem(backend, include_artifacts=True)
+    assert "test_bot_thing" in [n["id"] for n in with_artifacts["nodes"]]
+
+
+def test_ecosystem_states_are_honest(tmp_path):
+    from core.operations.ecosystem import ecosystem
+
+    backend = JSONFileBackend(root_dir=str(tmp_path / "store"))
+    backend.save("aster", "identity_spec", {"name": "Aster", "role": "Operator"})
+    # Live heartbeat -> online; stale -> offline; dead pid -> offline.
+    backend.save("aster", "operations.presence", {
+        "status": "idle", "last_heartbeat": _iso(datetime.now(timezone.utc)),
+    })
+    fresh = ecosystem(backend)
+    node = next(n for n in fresh["nodes"] if n["id"] == "aster")
+    assert node["state"] == "online"
+
+    backend.save("aster", "operations.presence", {
+        "status": "idle", "last_heartbeat": _iso(datetime.now(timezone.utc) - timedelta(hours=2)),
+    })
+    stale = ecosystem(backend)
+    node = next(n for n in stale["nodes"] if n["id"] == "aster")
+    assert node["state"] == "offline"
+
+    backend.save("aster", "operations.presence", {
+        "status": "idle", "last_heartbeat": _iso(datetime.now(timezone.utc)),
+        "operator_pid": 4194305,
+    })
+    dead = ecosystem(backend)
+    node = next(n for n in dead["nodes"] if n["id"] == "aster")
+    assert node["state"] == "offline"
+
+
+def test_ecosystem_edges_only_from_real_members(tmp_path):
+    from core.operations.ecosystem import ecosystem
+
+    backend = JSONFileBackend(root_dir=str(tmp_path / "store"))
+    # No aster: no principal anchor, no edges (edges reference aster).
+    backend.save("comet", "identity_spec", {"name": "Comet", "role": "", "tagline": ""})
+    payload = ecosystem(backend)
+    assert payload["edges"] == []
+
+
+def test_ecosystem_endpoint_serves_over_http(tmp_path):
+    from core.operations.ecosystem import ecosystem
+
+    backend = JSONFileBackend(root_dir=str(tmp_path / "store"))
+    backend.save("aster", "identity_spec", {"name": "Aster", "role": "Operator", "tagline": "t"})
+    backend.save("aster", "operations.presence", {
+        "status": "idle", "last_heartbeat": _iso(datetime.now(timezone.utc)),
+    })
+    payload = ecosystem(backend)
+    body = json.dumps(payload)
+    assert "nodes" in body and "edges" in body
+    # No secrets in the payload
+    assert "key" not in body.lower() or '"key"' not in body

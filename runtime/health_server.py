@@ -164,6 +164,7 @@ form.composer {{ padding-bottom: calc(10px + env(safe-area-inset-bottom)); }}
     <button class="btn" id="sw-reload">Update now</button></div>
   <nav class="tabs">
     <button data-tab="home" class="on">Home</button>
+    <button data-tab="ecosystem">Ecosystem</button>
     <button data-tab="activity">Activity</button>
     <button data-tab="relationships">People</button>
     <button data-tab="capabilities">Skills</button>
@@ -193,6 +194,17 @@ form.composer {{ padding-bottom: calc(10px + env(safe-area-inset-bottom)); }}
   </div>
   <div class="card"><div class="label">Capabilities</div><div class="value" id="capabilities">—</div><div class="sub" id="capabilities-sub"></div></div>
   <div class="card"><div class="label">Identity</div><div class="value" id="profile-name">Aster · AI Identity · IdentityOS</div><div class="sub" id="profile-detail">Loading…</div></div>
+  </section>
+  <section class="tab" id="sec-ecosystem">
+    <div class="card">
+      <div class="label">Identity ecosystem</div>
+      <div class="sub">Every identity in the runtime. Hover a node for its live state; edges are real relationships.</div>
+      <div id="eco-map" style="margin-top:10px"></div>
+    </div>
+    <div class="card" id="eco-detail-card" style="display:none">
+      <div class="label" id="eco-detail-name">—</div>
+      <div id="eco-detail"></div>
+    </div>
   </section>
   <section class="tab" id="sec-activity">
     <div class="card"><div class="label">Recent activity</div><div id="timeline"><div class="sub">Loading…</div></div></div>
@@ -241,6 +253,227 @@ form.composer {{ padding-bottom: calc(10px + env(safe-area-inset-bottom)); }}
     if (h < 48) return h + (h === 1 ? " hour ago" : " hours ago");
     return Math.floor(h / 24) + " days ago";
   }}
+
+  // ── ecosystem map ─────────────────────────────────────────────────────
+  // Orbital layout: the operator identity anchors the center, teammates sit
+  // on a ring, and the human principal anchors the delegation edge. Positions
+  // are deterministic so the map does not jitter between refreshes; hovering
+  // a node shows its live state, clicking focuses the detail card.
+  var ecoNodes = [];
+  var ecoFocus = null;
+
+  function ecoLayout(nodes) {{
+    var w = 560, h = 420, cx = w / 2, cy = h / 2;
+    var ring = nodes.filter(function (n) {{ return n.id !== "principal" && n.id !== "aster" && n.core_team; }});
+    var artifacts = nodes.filter(function (n) {{ return !n.core_team; }});
+    var positioned = {{}};
+    if (nodes.some(function (n) {{ return n.id === "principal"; }})) {{
+      positioned["principal"] = {{ x: cx, y: 70 }};
+    }}
+    if (nodes.some(function (n) {{ return n.id === "aster"; }})) {{
+      positioned["aster"] = {{ x: cx, y: cy + 30 }};
+    }}
+    var radius = 150;
+    for (var i = 0; i < ring.length; i++) {{
+      var angle = (Math.PI * 2 * i) / Math.max(1, ring.length) - Math.PI / 2;
+      positioned[ring[i].id] = {{
+        x: cx + radius * Math.cos(angle),
+        y: cy + 30 + radius * 0.72 * Math.sin(angle),
+      }};
+    }}
+    for (var a = 0; a < artifacts.length; a++) {{
+      var ang = (Math.PI * 2 * a) / Math.max(1, artifacts.length) + Math.PI / 7;
+      positioned[artifacts[a].id] = {{
+        x: cx + (radius + 62) * Math.cos(ang),
+        y: cy + 30 + (radius + 62) * 0.72 * Math.sin(ang),
+      }};
+    }}
+    return {{ width: w, height: h, positions: positioned }};
+  }}
+
+  function renderEcosystem(eco) {{
+    var host = $("eco-map");
+    if (!host) return;
+    var nodes = eco.nodes || [];
+    var edges = eco.edges || [];
+    ecoNodes = nodes;
+    host.textContent = "";
+
+    var layout = ecoLayout(nodes);
+    var svgNS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + layout.width + " " + layout.height);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("style", "max-height:420px;display:block");
+
+    var defs = document.createElementNS(svgNS, "defs");
+    var grad = document.createElementNS(svgNS, "radialGradient");
+    grad.setAttribute("id", "ecoGlow");
+    var stop1 = document.createElementNS(svgNS, "stop");
+    stop1.setAttribute("offset", "0%");
+    stop1.setAttribute("stop-color", "#34d17b");
+    stop1.setAttribute("stop-opacity", ".35");
+    var stop2 = document.createElementNS(svgNS, "stop");
+    stop2.setAttribute("offset", "100%");
+    stop2.setAttribute("stop-color", "#34d17b");
+    stop2.setAttribute("stop-opacity", "0");
+    grad.appendChild(stop1);
+    grad.appendChild(stop2);
+    defs.appendChild(grad);
+    svg.appendChild(defs);
+
+    // Edges first so nodes paint above them.
+    (eco.edges || []).forEach(function (e) {{
+      var a = layout.positions[e.from], b = layout.positions[e.to];
+      if (!a || !b) return;
+      var line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
+      line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
+      line.setAttribute("stroke", "#2b3a55");
+      line.setAttribute("stroke-width", "2");
+      line.setAttribute("stroke-dasharray", "6 5");
+      svg.appendChild(line);
+      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      var label = document.createElementNS(svgNS, "text");
+      label.setAttribute("x", mx); label.setAttribute("y", my - 6);
+      label.setAttribute("fill", "#5f7189");
+      label.setAttribute("font-size", "10");
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = e.label;
+      svg.appendChild(label);
+    }});
+
+    nodes.forEach(function (n) {{
+      var p = layout.positions[n.id];
+      if (!p) return;
+      var g = document.createElementNS(svgNS, "g");
+      g.setAttribute("style", "cursor:pointer");
+      var isFocus = ecoFocus === n.id;
+      var r = n.id === "principal" ? 26 : (n.core_team ? 22 : 16);
+      if (n.id === "aster" && n.state === "online") {{
+        var halo = document.createElementNS(svgNS, "circle");
+        halo.setAttribute("cx", p.x); halo.setAttribute("cy", p.y);
+        halo.setAttribute("r", r + 18);
+        halo.setAttribute("fill", "url(#ecoGlow)");
+        svg.appendChild(halo);
+      }}
+      var circle = document.createElementNS(svgNS, "circle");
+      circle.setAttribute("cx", p.x); circle.setAttribute("cy", p.y);
+      circle.setAttribute("r", r);
+      circle.setAttribute("fill", "#131a24");
+      circle.setAttribute("stroke", n.color || "#4a5568");
+      circle.setAttribute("stroke-width", isFocus ? "3.5" : "2.5");
+      g.appendChild(circle);
+      var text = document.createElementNS(svgNS, "text");
+      text.setAttribute("x", p.x); text.setAttribute("y", p.y + 4);
+      text.setAttribute("text-anchor", "middle");
+      text.setAttribute("fill", "#e8eef4");
+      text.setAttribute("font-size", n.core_team ? "12" : "9");
+      text.setAttribute("font-weight", "700");
+      text.textContent = (n.name || n.id).slice(0, 2).toUpperCase();
+      g.appendChild(text);
+      var name = document.createElementNS(svgNS, "text");
+      name.setAttribute("x", p.x); name.setAttribute("y", p.y + r + 16);
+      name.setAttribute("text-anchor", "middle");
+      name.setAttribute("fill", "#93a1b3");
+      name.setAttribute("font-size", "11");
+      name.textContent = n.name;
+      g.appendChild(name);
+      if (n.core_team) {{
+        var badge = document.createElementNS(svgNS, "text");
+        badge.setAttribute("x", p.x); badge.setAttribute("y", p.y + r + 30);
+        badge.setAttribute("text-anchor", "middle");
+        badge.setAttribute("fill", n.color || "#4a5568");
+        badge.setAttribute("font-size", "10");
+        badge.textContent = n.state + (n.needs_open ? " · " + n.needs_open + " need" + (n.needs_open === 1 ? "" : "s") : "");
+        g.appendChild(badge);
+      }}
+      g.addEventListener("mouseenter", function () {{ showEcoTooltip(n, p, layout); }});
+      g.addEventListener("mouseleave", hideEcoTooltip);
+      g.addEventListener("click", function () {{
+        ecoFocus = (ecoFocus === n.id) ? null : n.id;
+        renderEcosystem(eco);
+        showEcoDetail(n);
+      }});
+      svg.appendChild(g);
+    }});
+
+    var tooltip = document.createElementNS(svgNS, "g");
+    tooltip.setAttribute("id", "eco-tooltip");
+    tooltip.setAttribute("style", "display:none;pointer-events:none");
+    svg.appendChild(tooltip);
+    host.appendChild(svg);
+    var legend = el("div", "sub", "Live states: green healthy · amber waiting · red degraded · gray offline. " +
+      (eco.core_count || 0) + " core member(s)" + ((nodes.length > (eco.core_count || 0)) ? " · " + (nodes.length - eco.core_count) + " artifact(s) hidden" : "") + ".");
+    host.appendChild(legend);
+  }}
+
+  function showEcoTooltip(n, p, layout) {{
+    var tooltip = document.getElementById("eco-tooltip");
+    if (!tooltip) return;
+    tooltip.textContent = "";
+    var w = 210, x = Math.min(p.x + 30, layout.width - w - 8), y = Math.max(10, p.y - 46);
+    var rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", x); rect.setAttribute("y", y);
+    rect.setAttribute("width", w); rect.setAttribute("height", 84);
+    rect.setAttribute("rx", 10);
+    rect.setAttribute("fill", "#0e1520");
+    rect.setAttribute("stroke", n.color || "#2b3a55");
+    tooltip.appendChild(rect);
+    var lines = [
+      (n.name || n.id) + (n.role ? " — " + n.role : ""),
+      "state: " + n.state + (n.heartbeat_age_seconds != null ? " (" + ago(n.last_heartbeat) + ")" : ""),
+      n.activity ? "activity: " + n.activity.slice(0, 60) : null,
+      n.has_operations
+        ? n.needs_open + " open need(s) · " + n.opportunities + " opportunit" + (n.opportunities === 1 ? "y" : "ies") + " · " + n.capabilities + " skill(s)"
+        : n.capabilities + " skill(s)",
+    ].filter(Boolean);
+    lines.forEach(function (line, i) {{
+      var t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("x", x + 10); t.setAttribute("y", y + 18 + i * 15);
+      t.setAttribute("fill", i === 0 ? "#e8eef4" : "#93a1b3");
+      t.setAttribute("font-size", "10.5");
+      t.textContent = line.length > 38 ? line.slice(0, 37) + "…" : line;
+      tooltip.appendChild(t);
+    }});
+    tooltip.setAttribute("style", "pointer-events:none");
+  }}
+
+  function hideEcoTooltip() {{
+    var tooltip = document.getElementById("eco-tooltip");
+    if (tooltip) tooltip.setAttribute("style", "display:none;pointer-events:none");
+  }}
+
+  function showEcoDetail(n) {{
+    var card = $("eco-detail-card");
+    if (!card) return;
+    card.style.display = "";
+    $("eco-detail-name").textContent = n.name + " — " + (n.role || "identity");
+    var box = $("eco-detail"); box.textContent = "";
+    var rows = [
+      ["State", n.state + (n.detail ? " · " + n.detail : "")],
+      ["Activity", n.activity || "—"],
+      ["Last meaningful action", n.last_meaningful_action || "—"],
+      ["Last heartbeat", n.last_heartbeat ? fmtTime(n.last_heartbeat) + " (" + ago(n.last_heartbeat) + ")" : "no record"],
+      ["Needs", n.needs_open + " open of " + n.needs_total + " total"],
+      ["Opportunities", String(n.opportunities)],
+      ["Messages", String(n.messages)],
+      ["Capabilities", String(n.capabilities)],
+    ];
+    rows.forEach(function (row) {{
+      var d = el("div", "");
+      d.appendChild(el("span", "label", row[0] + "  "));
+      d.appendChild(el("span", "", row[1]));
+      box.appendChild(d);
+    }});
+    if ((n.recent_actions || []).length) {{
+      box.appendChild(el("div", "label", "Recent actions"));
+      n.recent_actions.forEach(function (a) {{
+        box.appendChild(el("div", "sub", fmtTime(a.at) + " · " + a.summary));
+      }});
+    }}
+  }}
+
   function ahead(iso) {{
     if (!iso) return "";
     var s = Math.floor((Date.parse(iso) - Date.now()) / 1000);
@@ -483,6 +716,9 @@ form.composer {{ padding-bottom: calc(10px + env(safe-area-inset-bottom)); }}
           if (ev.outcome) d.appendChild(el("div", "sub", ev.outcome));
           tl.appendChild(d);
         }}
+      }} else if (name === "ecosystem") {{
+        var eco = await getJSON("/api/ecosystem");
+        renderEcosystem(eco);
       }} else if (name === "work") {{
         var ww = await getJSON("/api/work");
         var wl = $("work-list"); wl.textContent = "";
@@ -1222,7 +1458,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         if not path.startswith("/api/self") and path not in ("/health", "/status", "/api/presence", "/api/activity",
                         "/api/relationships", "/api/capabilities", "/api/messages", "/api/work",
                         "/api/push/status", "/api/push/public-key", "/api/notify",
-                        "/api/profile"):
+                        "/api/profile", "/api/ecosystem"):
             self._send(404, b'{"error": "not found"}', "application/json")
             return
 
@@ -1438,6 +1674,11 @@ class _HealthHandler(BaseHTTPRequestHandler):
                 payload = {"messages": _message_cards(store, limit=limit)}
             elif path == "/api/profile":
                 payload = {"profile": _communication_profile()}
+            elif path == "/api/ecosystem":
+                from core.operations.ecosystem import ecosystem as _eco
+
+                include_artifacts = parse_qs(parsed.query).get("artifacts", ["0"])[0] in ("1", "true", "yes")
+                payload = _eco(storage, include_artifacts=include_artifacts)
             elif path == "/api/push/status":
                 payload = self._push_status_payload()
             elif path == "/api/push/public-key":
