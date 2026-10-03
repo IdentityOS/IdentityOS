@@ -1757,6 +1757,14 @@ class OperationsEngine:
             if re.search(r"\bresume\b", lowered) and "operator" in lowered:
                 self.resume(note="principal instruction via Aster Control")
                 return None
+            # Outreach instructions name a recipient and ask for contact. The
+            # executor below is the safe mechanism for that: policy already
+            # gated this instruction, the voice gate still applies at the
+            # transport, and every step records provenance.
+            outcome = self._execute_principal_outreach(
+                inbound, datetime.now(timezone.utc))
+            if outcome is not None:
+                return outcome
             return self._settle_principal(
                 inbound, MessageStatus.DEFERRED,
                 reason="policy allows autonomous action but no safe executor is wired "
@@ -1764,6 +1772,155 @@ class OperationsEngine:
                 notify=False,
             )
         return None
+
+    def _execute_principal_outreach(self, inbound: Message, now: datetime) -> Optional[dict[str, Any]]:
+        """Execute a principal-directed outreach instruction end to end.
+
+        Returns None when the instruction is not an outreach task (so the
+        caller defers it). The recipient must be an explicit email address in
+        the instruction text; the attachment must be an explicit filesystem
+        path. Aster composes the message body herself from the instruction's
+        substance — the principal's intent, never a canned template — and the
+        send goes through the normal transport with the voice gate intact.
+        """
+        body_text = inbound.body or ""
+        if self._transport is None:
+            return None
+        lowered = body_text.lower()
+        if not re.search(r"\b(send|contact|email|invite|reach out|join us|onboard)\b", lowered):
+            return None
+        # Recipient: an explicit email address in the instruction.
+        addresses = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", body_text)
+        recipient = next((a for a in addresses if not a.lower().endswith("@identityos")), None)
+        if recipient is None:
+            return None
+        # Attachment: an explicit filesystem path in the instruction.
+        paths = re.findall(r"(?:/[A-Za-z0-9._~/-]+)+\.[A-Za-z0-9]{2,4}", body_text)
+        attachments = []
+        for path in paths:
+            from pathlib import Path
+
+            p = Path(path)
+            if not p.is_file():
+                continue
+            attachments.append({"path": str(p), "filename": p.name})
+        named_paths = [a["path"] for a in attachments]
+
+        # Never invent a recipient: one explicit address, one send.
+        relationship = self.store.find_relationship_by_email(recipient)
+        if relationship is None:
+            from .models import Relationship
+
+            display = recipient.split("@", 1)[0].replace(".", " ").title()
+            relationship = Relationship(
+                display_name=display,
+                email=recipient,
+                role="principal-directed contact",
+                status=RelationshipStatus.NEW,
+                notes=[f"Introduced at principal instruction ({inbound.id})."],
+            )
+            self.store.add_relationship(relationship)
+
+        # Aster composes from the instruction's substance.
+        subject, outreach_body = self._compose_principal_directed(
+            inbound, relationship,
+        )
+        if not outreach_body:
+            return self._settle_principal(
+                inbound, MessageStatus.DEFERRED,
+                reason="reply generation unavailable; will retry on a later tick",
+                notify=False,
+            )
+
+        result = self._send(
+            to=recipient,
+            subject=subject,
+            body=outreach_body,
+            attachments=attachments,
+        )
+        if not result.get("ok"):
+            return self._settle_principal(
+                inbound, MessageStatus.DEFERRED,
+                reason=f"send failed: {result.get('error')}",
+                notify=False,
+            )
+        # Record the send as real evidence.
+        message = Message(
+            relationship_id=relationship.id,
+            direction=MessageDirection.OUTBOUND,
+            channel="email",
+            subject=subject,
+            body=outreach_body,
+            sent_at=utcnow().isoformat(),
+            status=MessageStatus.SENT,
+            authorization=f"principal_directed:{inbound.id}",
+            external_id=str(result.get("external_id", "")),
+            generation={"to": recipient, "attachments": [a["filename"] for a in attachments]},
+        )
+        self.store.append_message(message)
+        relationship.status = RelationshipStatus.OUTREACH_SENT
+        relationship.first_contacted_at = message.sent_at
+        relationship.last_outbound_at = message.sent_at
+        if message.thread_id:
+            relationship.thread_ids.append(message.thread_id)
+        relationship.next_action = "await reply; follow up if quiet"
+        self.store.update_relationship(relationship)
+        self._provenance(
+            ProvenancePhase.PRINCIPAL,
+            f"executed principal-directed outreach to {recipient}",
+            action="principal.execute_outreach",
+            result=result.get("external_id", ""),
+            refs={"message_id": inbound.id, "outbound_id": message.id,
+                  "recipient": recipient,
+                  "attachments": [a["filename"] for a in attachments]},
+        )
+        return self._settle_principal(
+            inbound, MessageStatus.COMPLETED,
+            reason=f"sent to {recipient} with {len(attachments)} attachment(s)",
+            notify=False,
+        )
+
+    def _compose_principal_directed(self, inbound: Message, relationship: Any) -> tuple[str, str]:
+        """Aster drafts the outreach from the instruction's substance.
+
+        The model writes the email; the voice invariant is enforced downstream.
+        Returns (subject, body); body empty means generation unavailable.
+        """
+        from .principal import thread_messages
+
+        repo_hint = ""
+        for token in re.findall(r"https?://\S+", inbound.body or ""):
+            if "github.com" in token:
+                repo_hint = token
+                break
+        instruction_summary = (inbound.body or "")[:1200]
+        context = (
+            "You are Aster, a persistent AI identity operating through IdentityOS, "
+            "acting under delegated authority for your principal. You are composing "
+            "an outreach email the principal explicitly directed. Be warm, direct, "
+            "and specific. NEVER use em dashes. Never claim something happened unless "
+            "it did. Disclose that you are an AI identity on first contact."
+        )
+        user_input = (
+            f"The principal's instruction: {instruction_summary}\n\n"
+            f"Recipient: {relationship.display_name} <{relationship.email}>\n"
+            + (f"Repository to share: {repo_hint}\n" if repo_hint else "")
+            + "\nWrite the email body. Sign it as Aster."
+        )
+        try:
+            raw = self._adapter.generate(context, user_input, self._identity) if self._adapter else None
+        except Exception:
+            raw = None
+        if not raw:
+            return "", ""
+        text = str(raw).strip()
+        subject = ""
+        body = text
+        if text.lower().startswith("subject:"):
+            lines = text.split("\n", 1)
+            subject = lines[0][len("subject:"):].strip()
+            body = lines[1].strip() if len(lines) > 1 else ""
+        return subject or "A personal invitation from IdentityOS", body
 
     def _generate_principal_response(
         self, inbound: Message, command: CommandClass
@@ -2283,7 +2440,8 @@ class OperationsEngine:
     def _send(self, *, to: str, subject: str, body: str, thread_id: str = "",
               in_reply_to: str = "", references=None, sender: str = "",
               sender_display_name: str = "", reply_to: str = "",
-              html_body: str = "", job: Any = None) -> dict[str, Any]:
+              html_body: str = "", attachments: Optional[list[dict]] = None,
+              job: Any = None) -> dict[str, Any]:
         if self._transport is None:
             return {"ok": False, "error": "no transport configured"}
         # Final voice gate: the transport artifact must contain zero U+2014.
@@ -2306,6 +2464,7 @@ class OperationsEngine:
                 sender=sender or self._sender_email(),
                 sender_display_name=sender_display_name or self._sender_display_name(),
                 reply_to=reply_to, html_body=html_body,
+                attachments=list(attachments or []),
             )
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

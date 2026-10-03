@@ -973,3 +973,94 @@ class TestGitHubContactSource:
         )
 
         assert src.search(Need(category="funding", description="find sponsors")) == []
+
+
+# ── principal-directed outreach executor ──────────────────────────────
+
+
+class _OutreachAdapter:
+    model = "outreach-test"
+
+    def generate(self, context, user_input, identity, **kwargs):
+        return ("Subject: Join us\nHi there, I am Aster. Welcome aboard.")
+
+
+def _principal_engine(tmp_path, body_text, adapter=None):
+    from core.capabilities.email.backends import FileMailboxBackend, MailboxTransport
+    from core.operations import ControlState
+    from core.operations.principal import submit_principal_message
+    from core.operations.principal import CommandClass
+
+    storage = InMemoryBackend()
+    backend = FileMailboxBackend(tmp_path / "mailbox", mailbox="aster")
+    transport = MailboxTransport(backend)
+    engine, _ = _engine(tmp_path, storage=storage, controls=ControlState(outbound_mode="autonomous"))
+    engine._transport = transport
+    engine.monitor.transport = transport
+    if adapter is not None:
+        engine._adapter = adapter
+    msg = submit_principal_message(engine.store, body_text)
+    return engine, backend, msg
+
+
+class TestPrincipalOutreachExecutor:
+    def test_executes_email_instruction_with_attachment(self, tmp_path):
+        from core.operations.models import RelationshipStatus, MessageStatus
+
+        contract = tmp_path / "contract.pdf"
+        contract.write_bytes(b"%PDF-1.4 test")
+        body_text = (
+            "Contact sabrina@example.org and invite her to join IdentityOS as a "
+            "contributor. Attach /tmp/does-not-exist.pdf and "
+            f"{contract} with the terms. Tell her I personally want her on board."
+        )
+        engine, backend, msg = _principal_engine(tmp_path, body_text, _OutreachAdapter())
+
+        now = datetime.now(timezone.utc)
+        outcome = engine._execute_principal_outreach(
+            engine.store.get_message(msg.id), now)
+
+        assert outcome is not None
+        rel = engine.store.find_relationship_by_email("sabrina@example.org")
+        assert rel is not None, "a real recipient record is created"
+        assert rel.status is RelationshipStatus.OUTREACH_SENT
+        outbox = backend.outbox()
+        assert len(outbox) == 1
+        assert outbox[0]["to"] == "sabrina@example.org"
+        assert outbox[0]["attachments"] == [{"filename": "contract.pdf", "path": "contract.pdf"}], \
+            "only real files attach; missing paths are skipped"
+
+    def test_never_invents_recipient_without_address(self, tmp_path):
+        body_text = "Contact the new contributor and invite her to join IdentityOS."
+        engine, backend, msg = _principal_engine(tmp_path, body_text, _OutreachAdapter())
+        outcome = engine._execute_principal_outreach(
+            engine.store.get_message(msg.id), datetime.now(timezone.utc))
+        assert outcome is None, "no explicit address means no invented recipient"
+        assert backend.outbox() == []
+
+    def test_missing_attachment_still_sends_without_it(self, tmp_path):
+        body_text = (
+            "Contact hire@example.org and email her the invite. "
+            "Attach /tmp/definitely-missing.pdf with the contract."
+        )
+        engine, backend, msg = _principal_engine(tmp_path, body_text, _OutreachAdapter())
+        outcome = engine._execute_principal_outreach(
+            engine.store.get_message(msg.id), datetime.now(timezone.utc))
+        assert outcome is not None
+        outbox = backend.outbox()
+        assert len(outbox) == 1
+        assert outbox[0]["attachments"] == [], "a missing file never blocks the send"
+
+    def test_generation_unavailable_defers_not_fakes(self, tmp_path):
+        class _NoAdapter:
+            model = "none"
+            def generate(self, *a, **k):
+                return None
+
+        body_text = "Contact hire@example.org and email her the invite."
+        engine, backend, msg = _principal_engine(tmp_path, body_text, _NoAdapter())
+        outcome = engine._execute_principal_outreach(
+            engine.store.get_message(msg.id), datetime.now(timezone.utc))
+        assert outcome is not None
+        assert outcome["outcome"] != "completed"
+        assert backend.outbox() == [], "no fabricated email when the model is down"
