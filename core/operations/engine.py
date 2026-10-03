@@ -1787,7 +1787,10 @@ class OperationsEngine:
         if self._transport is None:
             return None
         lowered = body_text.lower()
-        if not re.search(r"\b(send|contact|email|invite|reach out|join us|onboard)\b", lowered):
+        if not re.search(
+            r"\b(send|contact|email|invite|reach out|join\b|onboard\w*|hire\w*|ask\s+\w+ to)\b",
+            lowered,
+        ):
             return None
         # Recipient: an explicit email address in the instruction.
         addresses = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", body_text)
