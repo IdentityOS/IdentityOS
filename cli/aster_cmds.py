@@ -781,6 +781,19 @@ def cmd_aster_override(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_aster_lock(args: argparse.Namespace) -> int:
+    """Lock control keys so future overrides cannot change them."""
+    engine = _build_engine(args)
+    keys = [k.strip() for k in (args.keys or "").split(",") if k.strip()]
+    if not keys:
+        controls = engine.store.controls()
+        print(f"Locked keys: {controls.locked_keys or '(none)'}")
+        return 0
+    result = engine.lock_controls(*keys)
+    print(f"Locked: {', '.join(result['locked_keys'])}")
+    return 0
+
+
 def cmd_aster_outbound_mode(args: argparse.Namespace) -> int:
     engine = _build_engine(args)
     _print_json(engine.set_outbound_mode(args.mode))
@@ -1180,6 +1193,9 @@ def add_aster_parser(parser: argparse.ArgumentParser) -> None:
     p_override = sub.add_parser("override", help="Set operator control constraints (key=value ...)", parents=[base])
     p_override.add_argument("set", nargs="+", metavar="key=value")
 
+    p_lock = sub.add_parser("lock", help="Lock control keys so overrides cannot change them (or show locked)")
+    p_lock.add_argument("keys", nargs="?", default="", help="Comma-separated control keys to lock")
+
     p_mode = sub.add_parser(
         "outbound-mode",
         help="Set the outbound operating mode (observe | autonomous | approval_required)",
@@ -1249,6 +1265,7 @@ _ASTER_COMMAND_MAP = {
     "pause": cmd_aster_pause,
     "resume": cmd_aster_resume,
     "override": cmd_aster_override,
+    "lock": cmd_aster_lock,
     "outbound-mode": cmd_aster_outbound_mode,
     "would-send": cmd_aster_would_send,
     "email-check": cmd_aster_email_check,

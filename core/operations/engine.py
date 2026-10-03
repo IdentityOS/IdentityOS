@@ -247,11 +247,21 @@ class OperationsEngine:
         self._provenance(ProvenancePhase.CONTROL, "operator resumed", action="resume", result=note)
 
     def override(self, **changes: Any) -> dict[str, Any]:
-        """Update control constraints (never-contact, budgets, approval categories)."""
+        """Update control constraints (never-contact, budgets, approval categories).
+
+        Locked keys are refused: a setting the principal locked (e.g. the
+        3-per-day outreach floor) survives future overrides instead of being
+        silently relaxed by a later command. The refusal is loud, not silent.
+        """
         controls = self.store.controls()
         for key, value in changes.items():
             if not hasattr(controls, key):
                 raise ValueError(f"Unknown control field: {key}")
+            if key in (controls.locked_keys or []) and key != "locked_keys":
+                raise ValueError(
+                    f"'{key}' is locked by the principal and cannot be changed "
+                    "through override; unlock it explicitly first"
+                )
             setattr(controls, key, value)
         self.store.set_controls(controls)
         self._provenance(
@@ -259,6 +269,25 @@ class OperationsEngine:
             "human override applied",
             action="override",
             result=", ".join(f"{k}={v}" for k, v in changes.items()),
+        )
+        return controls.to_dict()
+
+    def lock_controls(self, *keys: str) -> dict[str, Any]:
+        """Lock control keys so future overrides cannot change them.
+
+        A locked setting is a deliberate, durable decision — the outreach
+        floor, for example — not a default to be relaxed by the next command.
+        """
+        controls = self.store.controls()
+        current = list(controls.locked_keys or [])
+        merged = list(dict.fromkeys([*current, *keys]))
+        controls.locked_keys = merged
+        self.store.set_controls(controls)
+        self._provenance(
+            ProvenancePhase.CONTROL,
+            "control keys locked by the principal",
+            action="lock_controls",
+            result=", ".join(merged),
         )
         return controls.to_dict()
 

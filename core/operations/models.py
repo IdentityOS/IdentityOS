@@ -843,6 +843,10 @@ class ControlState:
     max_follow_ups_per_target: int = 2
     max_research_calls_per_day: int = 25
     follow_up_after_hours: float = 72.0
+    # Control keys the principal has locked: override() refuses to change them.
+    # Locking is how a deliberate setting ("3/day, always") survives future
+    # overrides instead of being silently relaxed by a later command.
+    locked_keys: list[str] = field(default_factory=list)
     notes: str = ""
     updated_at: str = field(default_factory=lambda: utcnow().isoformat())
 
@@ -858,6 +862,7 @@ class ControlState:
             "max_follow_ups_per_target": self.max_follow_ups_per_target,
             "max_research_calls_per_day": self.max_research_calls_per_day,
             "follow_up_after_hours": self.follow_up_after_hours,
+            "locked_keys": list(self.locked_keys),
             "notes": self.notes,
             "updated_at": self.updated_at,
         }
@@ -875,6 +880,7 @@ class ControlState:
             max_follow_ups_per_target=int(data.get("max_follow_ups_per_target", 2)),
             max_research_calls_per_day=int(data.get("max_research_calls_per_day", 25)),
             follow_up_after_hours=float(data.get("follow_up_after_hours", 72.0)),
+            locked_keys=list(data.get("locked_keys", [])),
             notes=data.get("notes", ""),
             updated_at=data.get("updated_at", utcnow().isoformat()),
         )

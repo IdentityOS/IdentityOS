@@ -1064,3 +1064,51 @@ class TestPrincipalOutreachExecutor:
         assert outcome is not None
         assert outcome["outcome"] != "completed"
         assert backend.outbox() == [], "no fabricated email when the model is down"
+
+
+# ── control locks ───────────────────────────────────────────────────────
+
+
+class TestControlLocks:
+    def test_lock_prevents_override(self, tmp_path):
+        engine, _ = _engine(tmp_path)
+        engine.override(max_cold_outreach_per_day=3)
+        engine.lock_controls("max_cold_outreach_per_day")
+
+        with pytest.raises(ValueError, match="locked"):
+            engine.override(max_cold_outreach_per_day=1)
+
+        assert engine.store.controls().max_cold_outreach_per_day == 3, \
+            "a locked setting survives overrides"
+
+    def test_lock_persists_across_restart(self, tmp_path):
+        from runtime.persistence import JSONFileBackend
+
+        store_dir = str(tmp_path / "store")
+        storage = JSONFileBackend(root_dir=store_dir)
+        engine, _ = _engine(tmp_path, storage=storage)
+        engine.override(max_cold_outreach_per_day=3)
+        engine.lock_controls("max_cold_outreach_per_day")
+
+        # Fresh engine over the same backend = restart. Built directly so the
+        # harness's set_controls (which would wipe the persisted state) does
+        # not run: the constructor loads what was persisted.
+        engine2 = OperationsEngine(
+            JSONFileBackend(root_dir=store_dir),
+            OperatorConfig(
+                identity_id="aster",
+                project_root=str(_project(tmp_path)),
+                required_skills=["web.fetch"],
+            ),
+        )
+        with pytest.raises(ValueError, match="locked"):
+            engine2.override(max_cold_outreach_per_day=1)
+        assert engine2.store.controls().max_cold_outreach_per_day == 3
+
+    def test_locking_is_idempotent_and_provenance_recorded(self, tmp_path):
+        engine, _ = _engine(tmp_path)
+        engine.lock_controls("max_cold_outreach_per_day")
+        engine.lock_controls("max_cold_outreach_per_day")
+        assert engine.store.controls().locked_keys == ["max_cold_outreach_per_day"]
+        entries = [p for p in engine.store.list_provenance() if p.action == "lock_controls"]
+        assert len(entries) == 2
