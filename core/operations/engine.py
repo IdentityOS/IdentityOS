@@ -833,13 +833,37 @@ class OperationsEngine:
                 continue
 
             if not opportunity.contact_email:
+                # A candidate without a contact is not an outreach target. Track
+                # the attempts and demote after a bounded number so a page-only
+                # lead cannot occupy the top of the queue every tick and starve
+                # the contact-bearing candidates behind it (live finding: three
+                # junk leads blocked outreach for days).
+                attempts = int((opportunity.metadata or {}).get("contact_lookup_attempts", 0))
+                if attempts >= 3:
+                    # Park it: EVALUATING keeps the record visible for a later
+                    # re-evaluation without occupying the act queue.
+                    opportunity.status = OpportunityStatus.EVALUATING
+                    opportunity.metadata = dict(opportunity.metadata or {})
+                    opportunity.metadata["hold_cause"] = "no_contact_evidence"
+                    self.store.update_opportunity(opportunity)
+                    self._provenance(
+                        ProvenancePhase.PLAN,
+                        f"held after {attempts} ticks with no contact evidence; demoted so others can proceed",
+                        action="outreach_blocked",
+                        result="no_contact_evidence",
+                        refs={"opportunity_id": opportunity.id, "attempts": attempts},
+                    )
+                    continue
+                opportunity.metadata = dict(opportunity.metadata or {})
+                opportunity.metadata["contact_lookup_attempts"] = attempts + 1
+                self.store.update_opportunity(opportunity)
                 skips.append({"opportunity_id": opportunity.id, "reason": "no_contact_email"})
                 self._provenance(
                     ProvenancePhase.PLAN,
                     "no contact email discovered; cannot send individualized outreach",
                     action="outreach_blocked",
                     result="no_contact_email",
-                    refs={"opportunity_id": opportunity.id},
+                    refs={"opportunity_id": opportunity.id, "attempts": attempts + 1},
                 )
                 continue
 
