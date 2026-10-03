@@ -66,10 +66,27 @@ class WebCapability(Capability):
         except Exception as e:
             return CapabilityResult.fail("web", skill_name, type(e).__name__, str(e), source="HTTP fetch", duration_ms=(_time.monotonic() - _t0) * 1000)
 
+    def _github_headers(self, url: str) -> dict[str, str]:
+        """Authenticate GitHub API reads when a token is configured.
+
+        Unauthenticated GitHub API calls cap at 60/hour, which a discovery
+        loop exhausts in minutes; the token raises that to 5000/hour. The
+        token is only ever sent to api.github.com, never logged, and never
+        attached to non-GitHub requests.
+        """
+        import os
+
+        if "api.github.com" not in url:
+            return {}
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+        if not token or "PLACEHOLDER" in token.upper():
+            return {}
+        return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
     def _fetch(self, url: str = "", **kwargs: Any) -> dict[str, Any]:
         if not url:
             return {"error": "url is required"}
-        resp = self._client.get(url)
+        resp = self._client.get(url, headers=self._github_headers(url))
         resp.raise_for_status()
         return {
             "url": url,
@@ -82,7 +99,7 @@ class WebCapability(Capability):
     def _extract(self, url: str = "", **kwargs: Any) -> dict[str, Any]:
         if not url:
             return {"error": "url is required"}
-        resp = self._client.get(url)
+        resp = self._client.get(url, headers=self._github_headers(url))
         resp.raise_for_status()
         text = resp.text
         text = re.sub(r"<script\b[^>]*>.*?</script\b[^>]*>", "", text, flags=re.DOTALL | re.IGNORECASE)
