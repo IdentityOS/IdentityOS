@@ -1629,6 +1629,9 @@ class OperationsEngine:
         # scanning or this long-lived process would never see them.
         self.store.refresh_messages()
         self.store.refresh_relationships()
+        # Control-plane actions land on needs (blocker force-retry); reload so
+        # the long-lived operator's cache sees them.
+        self.store.refresh_needs()
         pending = pending_principal_messages(self.store)
         if not pending:
             return outcomes

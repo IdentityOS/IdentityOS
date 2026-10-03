@@ -370,6 +370,16 @@ class OperationsStore:
         """Reload relationships from the backend (same cross-process reason)."""
         self._relationships = self._load_relationships()
 
+    def refresh_needs(self) -> None:
+        """Reload needs from the backend.
+
+        Principal-directed control actions (force-retry on a stalled
+        instruction's blocker) are written through a different store instance;
+        without a reload the long-lived operator's cached needs never see them
+        and a released hold stays stuck forever.
+        """
+        self._needs = self._load_needs()
+
     def refresh_email_jobs(self) -> None:
         """Reload the email job ledger from the backend.
 
