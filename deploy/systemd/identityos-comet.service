@@ -1,0 +1,35 @@
+# comet — team agent.
+#
+# Comet drives the desktop browser capabilities for IdentityOS. It does not do
+# outreach; it stays alive and observable at all times so the ecosystem map
+# shows its real state.
+
+[Unit]
+Description=Comet Browser Embodiment Agent (IdentityOS)
+Documentation=file:%h/Documents/Doug/IdentityOS/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Doug/IdentityOS
+Environment=PYTHONPATH=%h/Documents/Doug/IdentityOS
+Environment=IDENTITY_STORE=%h/Documents/Doug/IdentityOS/.identity_store
+Environment=IDENTITY_BACKEND=json
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Documents/Doug/IdentityOS/.venv/bin/python -m cli.main aster agent-run --id comet --interval 300
+Restart=always
+RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Documents/Doug/IdentityOS
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=identityos-comet
+
+[Install]
+WantedBy=default.target

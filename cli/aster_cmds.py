@@ -867,6 +867,76 @@ def cmd_aster_would_send(args: argparse.Namespace) -> int:
 
 
 
+def cmd_agent_run(args: argparse.Namespace) -> int:
+    """Run any persisted team identity as a long-lived agent.
+
+    Comet, Distiller, and Engineer do not do outreach, but they must be alive
+    and observable at all times: the loop heartbeats presence, runs the
+    self-maintenance pass, and observes state honestly. The ecosystem map
+    shows them live from these records.
+    """
+    import signal
+
+    identity_id = str(getattr(args, "identity_id", "") or "").strip()
+    if not identity_id:
+        print("No identity given (--id).", file=sys.stderr)
+        return 1
+
+    from core.operations.team import build_team_engine
+
+    storage = _get_storage(args)
+    engine = build_team_engine(storage, identity_id)
+    if engine is None:
+        print(f"No real spec for identity '{identity_id}'; cannot run.", file=sys.stderr)
+        return 1
+    presence = engine._presence
+
+    stop_requested = threading.Event()
+
+    def _on_stop(signum, frame) -> None:
+        stop_requested.set()
+
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+
+    presence.start_run(pid=os.getpid(), next_planned_action="Standing by")
+    presence.set_subsystem("self_maintenance", "healthy")
+
+    interval = max(30.0, float(getattr(args, "interval", 0.0) or 300.0))
+
+    def _loop():
+        while not stop_requested.is_set():
+            try:
+                # A team tick: observe + maintain + heartbeat. No outreach.
+                engine.tick(observe=True, detect_needs=False, discover=False,
+                            evaluate=False, act=False, monitor=False,
+                            follow_ups=False, surfaces=False)
+                presence.heartbeat()
+            except Exception as exc:
+                logger.warning("agent tick failed for %s: %s", identity_id, exc)
+                try:
+                    presence.set_subsystem("self_maintenance", "degraded")
+                except Exception:
+                    pass
+            if stop_requested.wait(interval):
+                break
+        presence.mark_offline(reason="agent stopped gracefully")
+
+    worker = threading.Thread(target=_loop, name=f"agent-{identity_id}", daemon=True)
+    worker.start()
+
+    print(f"Running agent '{identity_id}' (interval={interval}s) — Ctrl-C to stop.",
+          flush=True)
+    try:
+        while not stop_requested.wait(1.0):
+            pass
+    except KeyboardInterrupt:
+        stop_requested.set()
+    worker.join(timeout=5.0)
+    print(f"Agent '{identity_id}' stopped gracefully; state persisted.", flush=True)
+    return 0
+
+
 def cmd_aster_send(args: argparse.Namespace) -> int:
     """Send one outbound email through Aster's live runtime (transport + voice).
 
@@ -1196,6 +1266,11 @@ def add_aster_parser(parser: argparse.ArgumentParser) -> None:
     p_lock = sub.add_parser("lock", help="Lock control keys so overrides cannot change them (or show locked)")
     p_lock.add_argument("keys", nargs="?", default="", help="Comma-separated control keys to lock")
 
+    p_agent = sub.add_parser("agent-run", help="Run any team identity as a long-lived agent (Comet, Distiller, Engineer)",
+                             parents=[base])
+    p_agent.add_argument("--id", dest="identity_id", required=True, help="Identity ID to run")
+    p_agent.add_argument("--interval", type=float, default=300.0, help="Seconds between agent ticks")
+
     p_mode = sub.add_parser(
         "outbound-mode",
         help="Set the outbound operating mode (observe | autonomous | approval_required)",
@@ -1266,6 +1341,7 @@ _ASTER_COMMAND_MAP = {
     "resume": cmd_aster_resume,
     "override": cmd_aster_override,
     "lock": cmd_aster_lock,
+    "agent-run": cmd_agent_run,
     "outbound-mode": cmd_aster_outbound_mode,
     "would-send": cmd_aster_would_send,
     "email-check": cmd_aster_email_check,
