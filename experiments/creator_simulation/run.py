@@ -98,10 +98,12 @@ def worker(action, actor, purpose, home, artifact):
     raise ValueError(action)
 
 
-def run(output: Path, artifact: Path):
+def run(output: Path, artifact: Path, on_event=None):
     output.mkdir(parents=True, exist_ok=False)
     ledger=[]
     def observe(actor, action, cmd, home, check=None):
+        if on_event:
+            on_event({"actor":actor,"action":action,"phase":"starting"})
         started=time.monotonic()
         env=dict(os.environ, PYTHONPATH=str(ROOT), IDENTITY_STORE_PATH=str(home/'import_store'))
         env.pop('IDENTITY_REGISTRY_URL', None)
@@ -119,6 +121,8 @@ def run(output: Path, artifact: Path):
         with (output/'ledger.jsonl').open('a') as stream:
             stream.write(json.dumps(record)+'\n')
         print(f"{actor}: {action}: {'PASS' if record['passed'] else 'FAIL'}",flush=True)
+        if on_event:
+            on_event({**record,"phase":"finished"})
         return record['passed']
     for actor, role, purpose in ACTORS:
         home=output/actor

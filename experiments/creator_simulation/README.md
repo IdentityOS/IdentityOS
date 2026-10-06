@@ -38,3 +38,21 @@ Two CLI paths need a separate product fix: `registry publish` prints contributio
 - Focused simulation checks after adding package identity and permission evidence: 2 passed.
 - Skill Forge, third-party SDK, and registry lifecycle checks: 20 passed.
 - Retained community run: 16 actors, 12 creators, 96/96 observed steps passed.
+
+## Live BAND workplace
+
+`live_band.py` runs one finite community round and publishes START and observed PASS/FAIL messages from the mapped BAND seats. A SQLite outbox retains messages until delivery succeeds. Room delivery failure stops further work; the next invocation retries pending messages. An interrupted round retains its partial ledger and is explicitly reported before a fresh round begins.
+
+Use an explicitly selected room in `bindings.json`; the runner never silently substitutes a different room. The human owner must add the first seat (`IDOS Poet`) to a human-owned room. That seat then invites the remaining seats. The local account hit its remote-agent quota after nine dedicated seats; the seven remaining actors are explicitly labelled when sharing those seats. This maps sixteen synthetic actors to nine BAND identities rather than claiming sixteen independent BAND seats exist.
+
+On this machine the selected room is `5c44dadb-32bf-42c8-92ce-0962c03291ec`, renamed **IDOS Creator Community**. The durable state is `~/.local/state/idos-creator-community`; local systemd service/timer `idos-creator-community` retry readiness every minute while blocked, then schedule a new round ten minutes after completion. Each round is a fresh isolated synthetic cohort with real persisted state/restart checks within the round; these are scripted lifecycle workloads, not free-running LLM identities or continuous creative projects. Failure and publication messages are labelled by actual actor even for shared seats.
+
+Inspect and pause the runner:
+
+```sh
+systemctl --user status idos-creator-community.service idos-creator-community.timer
+journalctl --user -u idos-creator-community.service -n 30
+systemctl --user stop idos-creator-community.timer idos-creator-community.service
+```
+
+Room membership is verified before workloads start. If the room is inaccessible to the seats, the service remains in readiness retries and no simulation actions are presented as completed. Room messages use explicit mentions as required by BAND; the user can inspect all messages. Unconsumed mentions are telemetry rather than model conversations.
