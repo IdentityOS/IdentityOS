@@ -54,7 +54,7 @@ Download dependencies/models once; calls then need no external network. Use an
 Asterisk release whose AudioSocket application forwards DTMF (22.6 or newer is
 recommended; Ubuntu's older 20.6 package does not forward DTMF). Required modules
 include `res_agi`, `res_speech`, `res_audiosocket`, `app_audiosocket`, PJSIP,
-RTP, and the ulaw/linear codecs plus their dependencies. Check installed modules:
+RTP, `func_callerid`, and the ulaw/linear codecs plus their dependencies. Check installed modules:
 
 ```sh
 asterisk -rx 'module show like audiosocket'
@@ -72,6 +72,63 @@ it does not silently acquire models. Alternatively set STT to:
 ```json
 {"backend":"whisper.cpp","executable":"/absolute/path/whisper-cli","model":"/absolute/path/ggml-base.en.bin"}
 ```
+
+For a separate local OpenAI-compatible server such as llama.cpp, set
+`model_base_url` to its loopback HTTP API (for example
+`http://127.0.0.1:11435/v1`) and `model` to its configured alias. The default is
+local Ollama on port 11434. Remote endpoints and URL credentials are rejected.
+`model_timeout` overrides the default 120-second model timeout for slower local
+hardware; increasing it does not improve latency.
+Models without reliable native tool calling can select `tool_mode: "legacy"`.
+This uses the existing Ollama adapter's bounded text-tool loop, including the same
+runtime capability validation and evidence handling; it does not grant extra
+permissions. The default remains `native`. Use the model's embedded chat template
+when serving it with llama.cpp; with `--jinja`, a literal template name may be
+treated as template text rather than a built-in template selection.
+
+### Optional cloud inference with provider failover
+
+Local inference remains the default. To explicitly use existing cloud credentials,
+add these fields to the private phone configuration:
+
+```json
+{
+  "provider_env_file": "/absolute/path/to/private.env",
+  "cloud_providers": ["groq", "openrouter"],
+  "provider_cooldown_seconds": 60,
+  "model_timeout": 20,
+  "max_tokens": 512
+}
+```
+
+The selected providers are tried in order using the existing adapter system.
+Supported selections are `groq`, `cerebras`, and `openrouter`; their corresponding
+`*_API_KEY` and `*_MODEL` variables are read from the file. Groq and Cerebras also
+support numbered keys through their existing cooldown mechanisms. Unrelated
+credentials and `IDENTITY_ADAPTER` settings are not imported into the phone
+configuration. Missing credentials fail closed; secrets must never be committed.
+
+Unusable providers fall through to the next provider and cool down for
+`provider_cooldown_seconds` (60 seconds by default) before another turn tries
+them. The value must be non-negative; zero retries every provider on every turn.
+The cooldown begins only after an exhaustion-class failure and expires against
+the monotonic runtime clock. Non-exhaustion errors still propagate immediately,
+and a failure after tool execution never enters provider fallback. A lock protects
+cooldown state shared by concurrent phone calls; calls already executing at the
+instant another call records a cooldown are allowed to finish, while subsequent
+calls skip that provider until the deadline expires.
+Rate limits still apply, including limits shared
+by keys in the same account. This is availability fallback, not unlimited quota.
+Timeouts apply per provider request; tool rounds and provider retries can extend
+the total turn. A failure after a capability invocation is not replayed through
+another provider, to avoid executing the same action twice. Exhausting all
+providers remains an observable failure, not a fabricated response.
+
+Cloud inference sends the composed identity context and caller's transcribed
+messages to the selected providers. Speech recognition, speech synthesis,
+routing, sessions, and persistence remain local. No public SIP listener, tunnel,
+or phone number is required. When changing an existing service to cloud inference,
+remove its local-model readiness prerequisite; keep the gateway and PBX enabled.
 
 Create or select identities using the existing CLI. Then copy
 `examples/phone/config.json` to `.identity_phone/config.json`, fill in **canonical
@@ -212,6 +269,15 @@ inspection. Supply the same local model configuration with `--config`, and add
 `--dtmf` to select the second directory entry before the question. This separate
 test endpoint may use loopback IP identification; never use that shortcut on a
 LAN-facing listener. This is not a physical microphone/earpiece acceptance test.
+
+Whisper receives the configured identity names as vocabulary hints; these do not
+guarantee exact name spelling. For stronger end-to-end verification, pass
+`--store /path/to/the/live/json/store` to the probe. It then requires a **new**
+persisted response from the selected canonical identity for the spoken question,
+and at least 70% normalized text similarity between that response and the returned
+audio transcription. This tolerates phonetic name spelling without accepting an
+old memory, a greeting, or a response belonging to another identity. Without
+`--store`, the probe retains its exact-name transcription assertion.
 
 Protocol references: [Asterisk AudioSocket framing](https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/),
 [AudioSocket dialplan application](https://docs.asterisk.org/Latest_API/API_Documentation/Dialplan_Applications/AudioSocket/),

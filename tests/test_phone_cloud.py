@@ -1,0 +1,153 @@
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
+
+import pytest
+
+from adapters.chain import ChainAdapter
+from cli.phone import phone_adapter
+
+
+def test_cloud_configuration_is_explicit_and_filters_unrelated_secrets(tmp_path, monkeypatch):
+    env = tmp_path / "keys.env"
+    env.write_text(
+        "GROQ_API_KEY=test-groq\nOPENROUTER_API_KEY=test-router\nGITHUB_TOKEN=unrelated\nIDENTITY_ADAPTER=ollama\n"
+    )
+    adapter = phone_adapter(
+        {"provider_env_file": str(env), "cloud_providers": ["groq", "openrouter"], "model_timeout": 12}
+    )
+    assert isinstance(adapter, ChainAdapter)
+    assert [type(a).__name__ for a in adapter.adapters] == ["GroqAdapter", "OpenRouterAdapter"]
+    assert all(a.timeout == 12 for a in adapter.adapters)
+    assert all(a.max_tokens == 256 for a in adapter.adapters)
+    assert "test-groq" not in repr(adapter)
+    assert "unrelated" not in repr(adapter)
+
+
+def test_missing_cloud_keys_fails_closed(tmp_path):
+    with pytest.raises(ValueError, match="No configured"):
+        phone_adapter({"provider_env_file": str(tmp_path / "absent")})
+    with pytest.raises(ValueError, match="cloud_providers"):
+        phone_adapter({"provider_env_file": str(tmp_path / "absent"), "cloud_providers": ["unknown"]})
+
+
+def test_phone_cloud_cooldown_is_configurable_and_rejects_negative(tmp_path):
+    env = tmp_path / "keys.env"
+    env.write_text("GROQ_API_KEY=test-groq\n")
+    adapter = phone_adapter({
+        "provider_env_file": str(env),
+        "cloud_providers": ["groq"],
+        "provider_cooldown_seconds": 17,
+    })
+    assert adapter._cooldown_seconds == 17
+    with pytest.raises(ValueError, match="must be non-negative"):
+        phone_adapter({
+            "provider_env_file": str(env),
+            "cloud_providers": ["groq"],
+            "provider_cooldown_seconds": -1,
+        })
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "429 rate limit",
+        "500 internal server error",
+        "402 payment required",
+        "connection timeout",
+        "401 invalid api key",
+    ],
+)
+def test_failover_and_cooldown_preserve_request(failure):
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError(failure)
+    second.generate.return_value = "verified response"
+    chain = ChainAdapter([first, second], cooldown_seconds=60)
+    for _ in range(2):
+        assert chain.generate("same context", "same question", "same identity") == "verified response"
+    assert first.generate.call_count == 1
+    assert second.generate.call_count == 2
+    assert second.generate.call_args.kwargs["context"] == "same context"
+    assert second.generate.call_args.kwargs["identity"] == "same identity"
+
+
+def test_failover_never_replays_started_capability():
+    first, second = Mock(model="first"), Mock(model="second")
+    action = Mock()
+
+    def invoke_then_fail(**kwargs):
+        kwargs["execute_tool"]("email.send", {"body": "hello"})
+        raise RuntimeError("503 unavailable")
+
+    first.generate.side_effect = invoke_then_fail
+    with pytest.raises(RuntimeError, match="503"):
+        ChainAdapter([first, second]).generate("context", "request", None, execute_tool=action)
+    action.assert_called_once()
+    second.generate.assert_not_called()
+
+
+def test_cooled_provider_is_skipped_safely_by_concurrent_callers():
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("429 rate limit")
+    second.generate.return_value = "fallback"
+    chain = ChainAdapter([first, second], cooldown_seconds=60)
+
+    assert chain.generate("context", "prime cooldown", None) == "fallback"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(
+            lambda index: chain.generate("context", f"request {index}", None),
+            range(24),
+        ))
+
+    assert results == ["fallback"] * 24
+    assert first.generate.call_count == 1
+    assert second.generate.call_count == 25
+
+
+def test_negative_chain_cooldown_is_clamped_to_zero():
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("503 unavailable")
+    second.generate.return_value = "fallback"
+    chain = ChainAdapter([first, second], cooldown_seconds=-5)
+    assert chain.generate("context", "one", None) == "fallback"
+    assert chain.generate("context", "two", None) == "fallback"
+    assert first.generate.call_count == 2
+
+
+def test_provider_is_retried_after_cooldown_expires(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("adapters.chain.time.monotonic", lambda: clock[0])
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("429 rate limit")
+    second.generate.return_value = "fallback"
+    chain = ChainAdapter([first, second], cooldown_seconds=60)
+
+    assert chain.generate("context", "one", None) == "fallback"
+    assert chain.generate("context", "two", None) == "fallback"
+    first.generate.side_effect = None
+    first.generate.return_value = "recovered"
+    clock[0] = 160.01
+    assert chain.generate("context", "three", None) == "recovered"
+    assert first.generate.call_count == 2
+    assert second.generate.call_count == 2
+
+
+def test_multiple_provider_exhaustion_remains_observable():
+    adapters = [Mock(model=f"provider-{index}") for index in range(3)]
+    for index, adapter in enumerate(adapters):
+        adapter.generate.side_effect = RuntimeError(f"503 provider-{index} unavailable")
+    chain = ChainAdapter(adapters, cooldown_seconds=60)
+
+    with pytest.raises(RuntimeError, match="All adapters exhausted \\(3 tried\\)") as raised:
+        chain.generate("context", "request", None)
+
+    assert all(adapter.generate.call_count == 1 for adapter in adapters)
+    assert "provider-0 unavailable" in str(raised.value)
+    assert "provider-2 unavailable" in str(raised.value)
+
+
+def test_bad_request_is_not_hidden_by_fallback():
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("400 bad request")
+    with pytest.raises(RuntimeError, match="400"):
+        ChainAdapter([first, second]).generate("context", "request", None)
+    second.generate.assert_not_called()

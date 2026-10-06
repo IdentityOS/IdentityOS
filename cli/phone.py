@@ -5,6 +5,64 @@ import getpass
 import json
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
+
+
+def local_model_url(config):
+    url = config.get("model_base_url", "http://127.0.0.1:11434/v1")
+    parsed = urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("Phone model_base_url must be a local HTTP endpoint")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Phone model_base_url must not contain credentials, query or fragment")
+    return url
+
+
+def phone_adapter(config):
+    from adapters.openai_adapter import OllamaAdapter, OpenAIAdapter
+
+    if config.get("provider_env_file"):
+        from dotenv import dotenv_values
+
+        from adapters.chain import ChainAdapter
+        from adapters.configuration import build_adapter_from_env
+
+        # Deliberately select providers instead of importing an entire .env into
+        # this process (it may also contain GitHub and unrelated credentials).
+        source = dotenv_values(config["provider_env_file"], interpolate=False)
+        providers = config.get("cloud_providers", ["groq", "cerebras", "openrouter"])
+        if not providers or any(p not in ("groq", "cerebras", "openrouter") for p in providers):
+            raise ValueError("Phone cloud_providers must select groq, cerebras or openrouter")
+        adapters = []
+        for provider in dict.fromkeys(providers):
+            prefix = provider.upper() + "_"
+            values = {k: v for k, v in source.items() if k.startswith(prefix) and v}
+            values["OPENAI_TIMEOUT"] = str(config.get("model_timeout", 20))
+            adapter = build_adapter_from_env(values)
+            if adapter is None:
+                continue
+            adapter.timeout = float(config.get("model_timeout", 20))
+            adapter.max_tokens = int(config.get("max_tokens", 256))
+            adapters.append(adapter)
+        if not adapters:
+            raise ValueError("No configured phone cloud provider credentials found")
+        cooldown_seconds = float(config.get("provider_cooldown_seconds", 60))
+        if cooldown_seconds < 0:
+            raise ValueError("Phone provider_cooldown_seconds must be non-negative")
+        return ChainAdapter(adapters, cooldown_seconds=cooldown_seconds)
+
+    mode = config.get("tool_mode", "native")
+    if mode not in ("native", "legacy"):
+        raise ValueError("Phone tool_mode must be native or legacy")
+    options = dict(
+        model=config["model"],
+        base_url=local_model_url(config),
+        max_tokens=256,
+        timeout=float(config.get("model_timeout", 120)),
+    )
+    if mode == "legacy":
+        return OllamaAdapter(**options, prefer_legacy_tools=True)
+    return OpenAIAdapter(**options, api_key="ollama")
 
 
 def add_parser(sub):
@@ -77,17 +135,10 @@ def run(args):
             else:
                 print("asterisk: local SIP via FastAGI + AudioSocket. PSTN providers: not installed.")
         else:
-            from adapters.openai_adapter import OpenAIAdapter
             from runtime.phone.asterisk import PhoneGateway
             from runtime.phone.audio import EnergyVAD, FasterWhisper, Piper, WhisperCpp
 
-            adapter = OpenAIAdapter(
-                model=config["model"],
-                api_key="ollama",
-                base_url="http://127.0.0.1:11434/v1",
-                max_tokens=256,
-                timeout=120,
-            )
+            adapter = phone_adapter(config)
             runtime = IdentityRuntime(storage=_get_storage(args), adapter=adapter)
             try:
                 runtime.load_persisted()
@@ -101,7 +152,7 @@ def run(args):
                     logging.basicConfig(level=logging.INFO)
                     stt_config = config["stt"]
                     if stt_config["backend"] == "faster-whisper":
-                        stt = FasterWhisper(stt_config["model"])
+                        stt = FasterWhisper(stt_config["model"], vocabulary=router.identities)
                     elif stt_config["backend"] == "whisper.cpp":
                         stt = WhisperCpp(stt_config["executable"], stt_config["model"])
                     else:
