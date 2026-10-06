@@ -1,0 +1,210 @@
+[
+  {
+    "user_id": 0,
+    "username": "poet",
+    "name": "poet",
+    "bio": "poetry editor",
+    "persona": "An IdentityOS identity_creator focused on poetry editor. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "identity_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "poetry editor"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 1,
+    "username": "teacher",
+    "name": "teacher",
+    "bio": "classroom tutor",
+    "persona": "An IdentityOS identity_creator focused on classroom tutor. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "identity_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "classroom tutor"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 2,
+    "username": "researcher",
+    "name": "researcher",
+    "bio": "citation organizer",
+    "persona": "An IdentityOS identity_creator focused on citation organizer. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "identity_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "citation organizer"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 3,
+    "username": "community",
+    "name": "community",
+    "bio": "community moderator",
+    "persona": "An IdentityOS identity_creator focused on community moderator. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "identity_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "community moderator"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 4,
+    "username": "newsletter",
+    "name": "newsletter",
+    "bio": "newsletter formatting",
+    "persona": "An IdentityOS capability_creator focused on newsletter formatting. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "capability_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "newsletter formatting"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 5,
+    "username": "podcaster",
+    "name": "podcaster",
+    "bio": "episode summaries",
+    "persona": "An IdentityOS capability_creator focused on episode summaries. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "capability_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "episode summaries"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 6,
+    "username": "designer",
+    "name": "designer",
+    "bio": "design brief transformation",
+    "persona": "An IdentityOS capability_creator focused on design brief transformation. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "capability_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "design brief transformation"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 7,
+    "username": "indie",
+    "name": "indie",
+    "bio": "game dialogue tooling",
+    "persona": "An IdentityOS capability_creator focused on game dialogue tooling. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "capability_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "game dialogue tooling"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 8,
+    "username": "python_dev",
+    "name": "python_dev",
+    "bio": "Python companion app",
+    "persona": "An IdentityOS sdk_creator focused on Python companion app. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "sdk_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "Python companion app"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 9,
+    "username": "automation",
+    "name": "automation",
+    "bio": "workflow automation",
+    "persona": "An IdentityOS sdk_creator focused on workflow automation. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "sdk_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "workflow automation"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 10,
+    "username": "accessibility",
+    "name": "accessibility",
+    "bio": "accessible reading app",
+    "persona": "An IdentityOS sdk_creator focused on accessible reading app. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "sdk_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "accessible reading app"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 11,
+    "username": "integrator",
+    "name": "integrator",
+    "bio": "team knowledge app",
+    "persona": "An IdentityOS sdk_creator focused on team knowledge app. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "sdk_creator",
+    "interested_topics": [
+      "IdentityOS",
+      "team knowledge app"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 12,
+    "username": "reader",
+    "name": "reader",
+    "bio": "reading published poetry",
+    "persona": "An IdentityOS consumer focused on reading published poetry. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "consumer",
+    "interested_topics": [
+      "IdentityOS",
+      "reading published poetry"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 13,
+    "username": "student",
+    "name": "student",
+    "bio": "learning with a tutor",
+    "persona": "An IdentityOS consumer focused on learning with a tutor. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "consumer",
+    "interested_topics": [
+      "IdentityOS",
+      "learning with a tutor"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 14,
+    "username": "hobbyist",
+    "name": "hobbyist",
+    "bio": "organizing personal projects",
+    "persona": "An IdentityOS consumer focused on organizing personal projects. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "consumer",
+    "interested_topics": [
+      "IdentityOS",
+      "organizing personal projects"
+    ],
+    "karma": 1000
+  },
+  {
+    "user_id": 15,
+    "username": "operator",
+    "name": "operator",
+    "bio": "using community tools",
+    "persona": "An IdentityOS consumer focused on using community tools. Evaluates artifacts by actual output and persistence evidence.",
+    "profession": "consumer",
+    "interested_topics": [
+      "IdentityOS",
+      "using community tools"
+    ],
+    "karma": 1000
+  }
+]
