@@ -40,6 +40,9 @@ def provision(state):
     room=config.get('room_id')
     if not room:
         raise RuntimeError('Set an explicitly selected room_id in bindings.json before connecting seats')
+    band(['attach','--host','generic','--host-session','creator-users-poet','--room',room,
+          '--runtime','attach-inbox','--transport','attach-inbox','--host-pid',str(os.getpid()),
+          '--spawn-cwd',str(simulation.ROOT),'--json'],session=owner)
     # Agent access must exist before any workload starts. The human owner adds
     # the first seat; that seat may then invite the remaining dedicated seats.
     band(['chat','participants',room,'--json'],session=owner,parse=True)
