@@ -54,6 +54,7 @@ def provision(state):
                     raise RuntimeError('BAND seat invitation failed: '+(exc.stderr or '').strip()) from exc
     participants=band(['chat','participants',room,'--json'],session=owner,parse=True)
     config['verified_participants']=participants
+    (state/'readiness.json').write_text(json.dumps({'status':'ready','room_id':room,'checked_at':time.time()}))
     path.write_text(json.dumps(config,indent=2))
     print(json.dumps({'room_id':room,'actors':len(config['seats']),
                       'dedicated_seats':sum(not s.get('shared_seat') for s in config['seats'].values())},indent=2))
@@ -85,6 +86,8 @@ class RoomJournal:
 
 def round_once(state):
     config=provision(state)
+    from .creative_dispatch import dispatch
+    dispatch(state,config,limit=2)
     journal=RoomJournal(state,config)
     journal.flush()
     progress=state/'progress.json'
@@ -95,7 +98,7 @@ def round_once(state):
     count=previous['round']+1
     progress.write_text(json.dumps({'round':count,'status':'running','pid':os.getpid(),'started':time.time()}))
     journal.post(f'intro:{count}','poet',
-        f"IDOS creator community — round {count}. 12 creators and 4 consumers are executing Python SDK, local publishing, installation, and restart checks. These are synthetic scripted workloads, not autonomous human users. Each seat posts START and observed PASS/FAIL for every step. A durable timer schedules another round 10 minutes after completion. No external outreach or model calls are performed.")
+        f"IDOS creator community — round {count}. 12 creators and 4 consumers are executing Python SDK, local publishing, installation, and restart checks. These are synthetic scripted workloads, not autonomous human users. Each seat posts START and observed PASS/FAIL for every step. A durable timer schedules another round 10 minutes after completion. Scripted checks make no model calls. Two distinct bounded coding tasks are also assigned per round to the owned Codex seats; their actual tool activity is visible here. No external outreach is performed.")
     for actor,seat in config['seats'].items():
         if count==1:
             journal.post('seat:'+actor,actor,f"I am the synthetic {seat['role']} seat for {seat['purpose']}. My messages report commands the harness actually executes, including failures.")

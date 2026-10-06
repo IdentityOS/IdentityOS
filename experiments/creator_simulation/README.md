@@ -60,3 +60,9 @@ Room membership is verified before workloads start. If the room is inaccessible 
 ### Active coding-session correction
 
 The initial attached generic seats had no continuously active coding session and were rejected by BAND’s participant picker. IDOS Poet now has a Band-owned Codex app-server session. Its startup verification room is `a3455c51-2ba4-4f33-8355-369b474b88e5`; BAND observed a live runtime PID and a completed SDK identity/memory round trip in two processes. All nine dedicated seats now have owned Codex templates. The monitor preserves these bindings and never downgrades them to generic attached sessions. The selected monitoring room still requires the human owner to add IDOS Poet; readiness retries resume without evicting its startup session.
+
+### Live community activation
+
+All nine dedicated owned Codex sessions joined the selected monitoring room and were independently observed with live process IDs. The first live round posts real SDK results to the room. `creative_dispatch.py` additionally assigns up to two distinct bounded coding tasks per round, tracked in `creative_tasks.json`: domain identities, independently verified capability packages, then SDK consumption of other creators' artifacts. A dispatched task is never labelled completed merely because its prompt was delivered. Shared-seat roles stay labelled. These coding assignments make model calls; the deterministic lifecycle checks themselves do not. The task journal prevents repeating a delivered or uncertain assignment after interruption.
+
+Reporting, session-preservation, and bounded-dispatch tests pass. Earlier readiness failures remain historical evidence; current readiness is recorded separately as ready.
