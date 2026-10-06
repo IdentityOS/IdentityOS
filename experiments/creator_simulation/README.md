@@ -56,3 +56,7 @@ systemctl --user stop idos-creator-community.timer idos-creator-community.servic
 ```
 
 Room membership is verified before workloads start. If the room is inaccessible to the seats, the service remains in readiness retries and no simulation actions are presented as completed. Room messages use explicit mentions as required by BAND; the user can inspect all messages. Unconsumed mentions are telemetry rather than model conversations.
+
+### Active coding-session correction
+
+The initial attached generic seats had no continuously active coding session and were rejected by BAND’s participant picker. IDOS Poet now has a Band-owned Codex app-server session. Its startup verification room is `a3455c51-2ba4-4f33-8355-369b474b88e5`; BAND observed a live runtime PID and a completed SDK identity/memory round trip in two processes. All nine dedicated seats now have owned Codex templates. The monitor preserves these bindings and never downgrades them to generic attached sessions. The selected monitoring room still requires the human owner to add IDOS Poet; readiness retries resume without evicting its startup session.

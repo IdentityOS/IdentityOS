@@ -40,17 +40,12 @@ def provision(state):
     room=config.get('room_id')
     if not room:
         raise RuntimeError('Set an explicitly selected room_id in bindings.json before connecting seats')
-    band(['attach','--host','generic','--host-session','creator-users-poet','--room',room,
-          '--runtime','attach-inbox','--transport','attach-inbox','--host-pid',str(os.getpid()),
-          '--spawn-cwd',str(simulation.ROOT),'--json'],session=owner)
     # Agent access must exist before any workload starts. The human owner adds
     # the first seat; that seat may then invite the remaining dedicated seats.
     band(['chat','participants',room,'--json'],session=owner,parse=True)
     for actor,seat in config['seats'].items():
         if seat.get('shared_seat'):
             continue
-        band(['attach','--host','generic','--host-session','creator-users-'+actor,'--room',room,
-              '--runtime','attach-inbox','--transport','attach-inbox','--host-pid',str(os.getpid()),'--json'],session=seat['session'])
         if actor!='poet':
             try:
                 band(['invite','--room',room,'--session-id','creator-users-'+actor,'--force'],session=owner)
@@ -104,9 +99,6 @@ def round_once(state):
     for actor,seat in config['seats'].items():
         if count==1:
             journal.post('seat:'+actor,actor,f"I am the synthetic {seat['role']} seat for {seat['purpose']}. My messages report commands the harness actually executes, including failures.")
-        band(['attach','--host','generic','--host-session','creator-users-'+actor,
-              '--room',config['room_id'],'--host-pid',str(os.getpid()),
-              '--runtime','attach-inbox','--transport','attach-inbox','--host-pid',str(os.getpid()),'--json'],session=seat['session'])
     def event(record):
         actor=record['actor'];phase=record['phase'];action=record['action']
         if phase=='starting':

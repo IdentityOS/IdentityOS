@@ -33,3 +33,19 @@ def test_unreachable_room_prevents_work(tmp_path,monkeypatch):
     monkeypatch.setattr(live_band.simulation,'run',lambda *a,**k:pytest.fail('work began before room access'))
     with pytest.raises(RuntimeError,match='room unreachable'):
         live_band.round_once(tmp_path)
+
+
+def test_room_monitor_preserves_owned_coding_bindings(tmp_path,monkeypatch):
+    config=bindings()
+    config['seats']['poet'].update(agent_id='p',role='identity_creator',purpose='poetry')
+    config['seats']['teacher'].update(agent_id='t',role='identity_creator',purpose='teaching')
+    (tmp_path/'bindings.json').write_text(json.dumps(config))
+    monkeypatch.setattr(live_band.simulation,'ACTORS',[('poet','identity_creator','poetry'),('teacher','identity_creator','teaching')])
+    calls=[]
+    def command(args,**kwargs):
+        calls.append(args)
+        return [] if kwargs.get('parse') else ''
+    monkeypatch.setattr(live_band,'band',command)
+    live_band.provision(tmp_path)
+    assert not any('attach' in command for command in calls)
+    assert any('invite' in command for command in calls)
