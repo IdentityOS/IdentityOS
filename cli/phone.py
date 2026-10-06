@@ -46,7 +46,10 @@ def phone_adapter(config):
             adapters.append(adapter)
         if not adapters:
             raise ValueError("No configured phone cloud provider credentials found")
-        return ChainAdapter(adapters, cooldown_seconds=60)
+        cooldown_seconds = float(config.get("provider_cooldown_seconds", 60))
+        if cooldown_seconds < 0:
+            raise ValueError("Phone provider_cooldown_seconds must be non-negative")
+        return ChainAdapter(adapters, cooldown_seconds=cooldown_seconds)
 
     mode = config.get("tool_mode", "native")
     if mode not in ("native", "legacy"):

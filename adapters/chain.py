@@ -36,6 +36,11 @@ class ChainAdapter(BaseAdapter):
     """
     Tries multiple adapters in sequence, falling through when one is unusable.
 
+    ``cooldown_seconds`` temporarily skips a provider after an exhaustion
+    failure. Values below zero are clamped to zero, preserving the historical
+    behavior of trying every provider on every request. Cooldown bookkeeping is
+    protected by a lock so one adapter instance can serve concurrent callers.
+
     Each adapter handles its own internal key rotation (e.g. GroqAdapter
     rotates through GROQ_API_KEY[1..N] with cooldown; keys are auto-discovered
     incrementally).  When ALL keys for a given provider are exhausted — or the

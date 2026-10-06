@@ -95,6 +95,7 @@ add these fields to the private phone configuration:
 {
   "provider_env_file": "/absolute/path/to/private.env",
   "cloud_providers": ["groq", "openrouter"],
+  "provider_cooldown_seconds": 60,
   "model_timeout": 20,
   "max_tokens": 512
 }
@@ -107,8 +108,10 @@ support numbered keys through their existing cooldown mechanisms. Unrelated
 credentials and `IDENTITY_ADAPTER` settings are not imported into the phone
 configuration. Missing credentials fail closed; secrets must never be committed.
 
-Unusable providers fall through to the next provider and cool down for 60 seconds
-before another turn tries them. Rate limits still apply, including limits shared
+Unusable providers fall through to the next provider and cool down for
+`provider_cooldown_seconds` (60 seconds by default) before another turn tries
+them. The value must be non-negative; zero retries every provider on every turn.
+Rate limits still apply, including limits shared
 by keys in the same account. This is availability fallback, not unlimited quota.
 Timeouts apply per provider request; tool rounds and provider retries can extend
 the total turn. A failure after a capability invocation is not replayed through

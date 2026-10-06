@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
@@ -27,6 +28,23 @@ def test_missing_cloud_keys_fails_closed(tmp_path):
         phone_adapter({"provider_env_file": str(tmp_path / "absent")})
     with pytest.raises(ValueError, match="cloud_providers"):
         phone_adapter({"provider_env_file": str(tmp_path / "absent"), "cloud_providers": ["unknown"]})
+
+
+def test_phone_cloud_cooldown_is_configurable_and_rejects_negative(tmp_path):
+    env = tmp_path / "keys.env"
+    env.write_text("GROQ_API_KEY=test-groq\n")
+    adapter = phone_adapter({
+        "provider_env_file": str(env),
+        "cloud_providers": ["groq"],
+        "provider_cooldown_seconds": 17,
+    })
+    assert adapter._cooldown_seconds == 17
+    with pytest.raises(ValueError, match="must be non-negative"):
+        phone_adapter({
+            "provider_env_file": str(env),
+            "cloud_providers": ["groq"],
+            "provider_cooldown_seconds": -1,
+        })
 
 
 @pytest.mark.parametrize(
@@ -65,6 +83,34 @@ def test_failover_never_replays_started_capability():
         ChainAdapter([first, second]).generate("context", "request", None, execute_tool=action)
     action.assert_called_once()
     second.generate.assert_not_called()
+
+
+def test_cooled_provider_is_skipped_safely_by_concurrent_callers():
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("429 rate limit")
+    second.generate.return_value = "fallback"
+    chain = ChainAdapter([first, second], cooldown_seconds=60)
+
+    assert chain.generate("context", "prime cooldown", None) == "fallback"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(
+            lambda index: chain.generate("context", f"request {index}", None),
+            range(24),
+        ))
+
+    assert results == ["fallback"] * 24
+    assert first.generate.call_count == 1
+    assert second.generate.call_count == 25
+
+
+def test_negative_chain_cooldown_is_clamped_to_zero():
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("503 unavailable")
+    second.generate.return_value = "fallback"
+    chain = ChainAdapter([first, second], cooldown_seconds=-5)
+    assert chain.generate("context", "one", None) == "fallback"
+    assert chain.generate("context", "two", None) == "fallback"
+    assert first.generate.call_count == 2
 
 
 def test_bad_request_is_not_hidden_by_fallback():
