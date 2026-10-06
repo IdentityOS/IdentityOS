@@ -111,6 +111,12 @@ configuration. Missing credentials fail closed; secrets must never be committed.
 Unusable providers fall through to the next provider and cool down for
 `provider_cooldown_seconds` (60 seconds by default) before another turn tries
 them. The value must be non-negative; zero retries every provider on every turn.
+The cooldown begins only after an exhaustion-class failure and expires against
+the monotonic runtime clock. Non-exhaustion errors still propagate immediately,
+and a failure after tool execution never enters provider fallback. A lock protects
+cooldown state shared by concurrent phone calls; calls already executing at the
+instant another call records a cooldown are allowed to finish, while subsequent
+calls skip that provider until the deadline expires.
 Rate limits still apply, including limits shared
 by keys in the same account. This is availability fallback, not unlimited quota.
 Timeouts apply per provider request; tool rounds and provider retries can extend

@@ -113,6 +113,38 @@ def test_negative_chain_cooldown_is_clamped_to_zero():
     assert first.generate.call_count == 2
 
 
+def test_provider_is_retried_after_cooldown_expires(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("adapters.chain.time.monotonic", lambda: clock[0])
+    first, second = Mock(model="first"), Mock(model="second")
+    first.generate.side_effect = RuntimeError("429 rate limit")
+    second.generate.return_value = "fallback"
+    chain = ChainAdapter([first, second], cooldown_seconds=60)
+
+    assert chain.generate("context", "one", None) == "fallback"
+    assert chain.generate("context", "two", None) == "fallback"
+    first.generate.side_effect = None
+    first.generate.return_value = "recovered"
+    clock[0] = 160.01
+    assert chain.generate("context", "three", None) == "recovered"
+    assert first.generate.call_count == 2
+    assert second.generate.call_count == 2
+
+
+def test_multiple_provider_exhaustion_remains_observable():
+    adapters = [Mock(model=f"provider-{index}") for index in range(3)]
+    for index, adapter in enumerate(adapters):
+        adapter.generate.side_effect = RuntimeError(f"503 provider-{index} unavailable")
+    chain = ChainAdapter(adapters, cooldown_seconds=60)
+
+    with pytest.raises(RuntimeError, match="All adapters exhausted \\(3 tried\\)") as raised:
+        chain.generate("context", "request", None)
+
+    assert all(adapter.generate.call_count == 1 for adapter in adapters)
+    assert "provider-0 unavailable" in str(raised.value)
+    assert "provider-2 unavailable" in str(raised.value)
+
+
 def test_bad_request_is_not_hidden_by_fallback():
     first, second = Mock(model="first"), Mock(model="second")
     first.generate.side_effect = RuntimeError("400 bad request")
