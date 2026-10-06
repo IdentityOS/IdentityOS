@@ -1,0 +1,4 @@
+{
+  "passed": false,
+  "error": "SkillForgeError: independent behavioral verification failed: ValueError: case 'Publish a poetry editor' grants undeclared permission 'filesystem'"
+}
