@@ -136,4 +136,11 @@ if __name__=='__main__':
     if args.command=='provision':
         provision(state)
     else:
-        raise SystemExit(round_once(state))
+        try:
+            raise SystemExit(round_once(state))
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            reason=(exc.stderr or str(exc)) if isinstance(exc,subprocess.CalledProcessError) else str(exc)
+            state.mkdir(parents=True,exist_ok=True)
+            (state/'readiness.json').write_text(json.dumps({'status':'readiness_or_delivery_failed','error':reason[-2000:],'checked_at':time.time(),'pid':os.getpid()}))
+            print(reason,flush=True)
+            raise SystemExit(1)
