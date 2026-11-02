@@ -1,0 +1,256 @@
+{
+  "run_id": "idos-20261102T171243Z",
+  "started_at": "2026-11-02T17:12:43.413220+00:00",
+  "updated_at": "2026-11-02T17:14:23.688983+00:00",
+  "environment": {
+    "captured_at": "2026-11-02T17:12:45.581721+00:00",
+    "hostname": "[redacted: local hostname]",
+    "uname": "MSYS_NT-10.0-26200 [redacted-host] 3.6.6-1cdd4371.x86_64 2026-01-15 22:20 UTC x86_64 Msys",
+    "python": "3.12.16",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "memory": "[unavailable: [WinError 2] The system cannot find the file specified]",
+    "cpu": "[unavailable: [WinError 2] The system cannot find the file specified]",
+    "ollama_version": "[unavailable: [WinError 2] The system cannot find the file specified]",
+    "ollama_binary": null,
+    "ollama_models": [
+      {
+        "name": "gemma3:270m",
+        "model": "gemma3:270m",
+        "modified_at": "2026-10-30T00:24:13.3510349-05:00",
+        "size": 291554930,
+        "digest": "e7d36fb2c3b3293cfe56d55889867a064b3a2b22e98335f2e6e8a387e081d6be",
+        "details": {
+          "parent_model": "/Users/ollama/.ollama/models/blobs/sha256-735af2139dc652bf01112746474883d79a52fa1c19038265d363e3d42556f7a2",
+          "format": "gguf",
+          "family": "gemma3",
+          "families": [
+            "gemma3"
+          ],
+          "parameter_size": "268.10M",
+          "quantization_level": "Q8_0",
+          "context_length": 32768,
+          "embedding_length": 640,
+          "runner": "ggml"
+        },
+        "capabilities": [
+          "completion"
+        ]
+      }
+    ],
+    "requested_model": "gemma3:270m",
+    "model_present": true,
+    "cwd": "<repository-root>",
+    "mode": "idos",
+    "run_id": "idos-20261102T171243Z"
+  },
+  "mode": "idos",
+  "model": "gemma3:270m",
+  "benchmark_version": "0.1.0",
+  "tasks": [
+    {
+      "task_id": "A01",
+      "category": "reasoning",
+      "title": "Simple addition",
+      "success": true,
+      "failure": false,
+      "hallucination": false,
+      "latency_s": 15,
+      "probe_latency_s": 15,
+      "output": "2 + 2 = 4",
+      "checks": [
+        {
+          "type": "numeric",
+          "passed": true,
+          "detail": "found [2.0, 2.0, 4.0] (want 4.0 ± 0.0)",
+          "hallucination_check": false
+        },
+        {
+          "type": "forbidden",
+          "passed": true,
+          "detail": "no forbidden claims",
+          "hallucination_check": true
+        }
+      ],
+      "notes": "",
+      "extra": {
+        "eval_score": 1,
+        "policy_passed": true
+      }
+    },
+    {
+      "task_id": "B01",
+      "category": "memory",
+      "title": "Project name recall",
+      "success": true,
+      "failure": false,
+      "hallucination": false,
+      "latency_s": 37.594,
+      "probe_latency_s": 0.125,
+      "output": "I have these stored user facts:\n- project name: IdentityOS\n- project purpose: persistent AI identity infrastructure",
+      "checks": [
+        {
+          "type": "contains_all",
+          "passed": true,
+          "detail": "all present",
+          "hallucination_check": false
+        },
+        {
+          "type": "contains_any",
+          "passed": true,
+          "detail": "matched 'persistent'",
+          "hallucination_check": false
+        }
+      ],
+      "notes": "",
+      "extra": {
+        "eval_score": 1,
+        "policy_passed": true
+      }
+    },
+    {
+      "task_id": "C01",
+      "category": "tools",
+      "title": "Multiplication",
+      "success": false,
+      "failure": true,
+      "hallucination": false,
+      "latency_s": 34.953,
+      "probe_latency_s": 34.953,
+      "output": "```python\nimport datetime\nimport json_arguments\nfrom datetime import datetime\nfrom datetime import date\n\ndef calculate_days(date_string):\n    try:\n        date_object = datetime.strptime(date_string, \"%Y-%m-%d\")\n        return date_object.days\n    except Exception as e:\n        print(f\"Error calculating days: {e}\")\n        return 0\n\ndef get_user_info():\n    try:\n        user_info = {\n            \"name\": \"Alice\",\n            \"age\": 25,\n            \"city\": \"New York\",\n            \"country\": \"USA\"\n        }\n        return user_info\n    except Exception as e:\n        print(f\"Error getting user info: {e}\")\n        return None\n\ndef calculate_time_conversion():\n    try:\n        time_string = \"2026-11-02 17:12 UTC\"\n        try:\n            time_object = datetime.strptime(time_string, \"%H:%M:%S\")\n            return time_object\n        except Exception as e:\n            print(f\"Error calculating time conversion: {e}\")\n            return None\n    except Exception as time_string:\n        print(f\"Error calculating time conversion: {time_string}\")\n        return None\n\ndef get_time_conversion():\n    try:\n        time_string = \"2026-11-02 17:13 UTC\"\n        try:\n            time_object = datetime.strptime(time_string, \"%H:%M:%S\")\n            return time_object\n        except Exception as e:\n            print(f\"Error calculating time conversion: {e}\")\n            return None\n    except Exception as time_string:\n        print(f\"Error calculating time conversion: {time_string}\")\n        return None\n\ndef get_time_info():\n    try:\n        time_object = get_time_conversion()\n        if time_object:\n            return time_object.time\n        else:\n            print(\"Time conversion failed.\")\n            return None\n    except Exception as e:\n        print(f\"Error getting time info: {e}\")\n        return None\n\ndef get_user_info():\n    try:\n        user_info = get_user_info()\n        if user_info:\n            return user_info\n        else:\n            return None\n    except Exception as e:\n        print(f\"Error getting user info: {e}\")\n        return None\n\ndef get_time_info():\n    try:\n        time_info = get_time_info()\n        if time_info:\n            return time_info.time\n        else:\n            print(\"Time info failed.\")\n            return None\n```\n\nKey improvements and explanations:\n\n* **Error Handling:**  The `get_user_info` function now includes `try...except` blocks to handle potential errors during the time conversion process.  This is crucial for real-world applications where data might be inconsistent.\n* **`datetime` Module:**  Uses the `datetime` module for date and time calculations.\n* **`datetime.strptime`:**  Uses `strptime` to parse the time string correctly.\n* **`get_time_conversion()`:**  This function now uses `datetime.strptime` to convert the time string to a `datetime` object.  This is a more robust approach than relying on string parsing.\n* **`get_user_info()`:**  This function now uses `get_user_info()` to get user information.\n* **`get_user_info()`:**  This function now uses `get_user_info()` to get user information.\n* **`get_user_info()`:**  This function now uses `get_user_info()` to get user information.\n* **`get_user_info()`:** This function now uses `get_user_info()` to get user information.\n* **`get_user_info()`:** This function now uses `get_user_info()` to get user information.\n* **`get_user_info()`:** This function now uses `get_user_info()` to get user information.\n* **`get_and_return`:**  The `get_user_info()` function now returns the user information as a string.  This is a more standard way to return data.\n* **`get_and_return`:** The `get_user_info()` function now returns the user information as a string. This is a more standard way to return data.\n* **`get_",
+      "checks": [
+        {
+          "type": "numeric",
+          "passed": false,
+          "detail": "found [0.0, 25.0, 2026.0, -11.0, -2.0, 17.0, 12.0, 2026.0, -11.0, -2.0, 17.0, 13.0] (want 411804.0 ± 0.0)",
+          "hallucination_check": false
+        }
+      ],
+      "notes": "",
+      "extra": {
+        "eval_score": 1,
+        "policy_passed": true
+      }
+    },
+    {
+      "task_id": "D01",
+      "category": "persistence",
+      "title": "Recall project after restart",
+      "success": true,
+      "failure": false,
+      "hallucination": false,
+      "latency_s": 5.72,
+      "probe_latency_s": 0.282,
+      "output": "I have these stored user facts:\n- project name: IdentityOS\n- project purpose: persistent AI identity infrastructure",
+      "checks": [
+        {
+          "type": "contains_all",
+          "passed": true,
+          "detail": "all present",
+          "hallucination_check": false
+        }
+      ],
+      "notes": "restart_after_setup",
+      "extra": {
+        "eval_score": 1,
+        "policy_passed": true
+      }
+    },
+    {
+      "task_id": "F01",
+      "category": "truthfulness",
+      "title": "Unknown personal breakfast",
+      "success": true,
+      "failure": false,
+      "hallucination": false,
+      "latency_s": 0.125,
+      "probe_latency_s": 0.125,
+      "output": "I do not know.",
+      "checks": [
+        {
+          "type": "abstain",
+          "passed": true,
+          "detail": "abstained",
+          "hallucination_check": true
+        },
+        {
+          "type": "forbidden",
+          "passed": true,
+          "detail": "no forbidden claims",
+          "hallucination_check": true
+        }
+      ],
+      "notes": "",
+      "extra": {
+        "eval_score": 1,
+        "policy_passed": true
+      }
+    }
+  ],
+  "suite": "IDOS Baseline",
+  "task_ids": [
+    "A01",
+    "B01",
+    "C01",
+    "D01",
+    "F01"
+  ],
+  "finished_at": "2026-11-02T17:14:23.692610+00:00",
+  "summary": {
+    "n": 5,
+    "success": 4,
+    "success_rate": 0.8,
+    "hallucination": 0,
+    "hallucination_rate": 0,
+    "avg_latency_s": 18.6784,
+    "categories": {
+      "reasoning": {
+        "n": 1,
+        "success": 1,
+        "success_rate": 1,
+        "hallucination": 0,
+        "hallucination_rate": 0,
+        "avg_latency_s": 15
+      },
+      "memory": {
+        "n": 1,
+        "success": 1,
+        "success_rate": 1,
+        "hallucination": 0,
+        "hallucination_rate": 0,
+        "avg_latency_s": 37.594
+      },
+      "tools": {
+        "n": 1,
+        "success": 0,
+        "success_rate": 0,
+        "hallucination": 0,
+        "hallucination_rate": 0,
+        "avg_latency_s": 34.953
+      },
+      "persistence": {
+        "n": 1,
+        "success": 1,
+        "success_rate": 1,
+        "hallucination": 0,
+        "hallucination_rate": 0,
+        "avg_latency_s": 5.72
+      },
+      "truthfulness": {
+        "n": 1,
+        "success": 1,
+        "success_rate": 1,
+        "hallucination": 0,
+        "hallucination_rate": 0,
+        "avg_latency_s": 0.125
+      }
+    }
+  },
+  "evidence_invocation": {
+    "command": "python benchmarks/runner.py --mode both --model gemma3:270m --demo --reset-identity",
+    "reset_identity": true
+  },
+  "evidence_redactions": [
+    "Local hostname replaced; it is not benchmark-relevant.",
+    "Absolute workspace path replaced; it is not benchmark-relevant."
+  ]
+}

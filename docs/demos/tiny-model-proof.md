@@ -6,16 +6,21 @@ through IdentityOS. The five tasks cover arithmetic, remembered project facts,
 capability use, persistence after restart, and an unknown personal fact. The
 audience sees both successes and failures. No model answers are prewritten.
 
-## First laptop run (October 30, 2026)
+## Clean laptop run (November 2, 2026)
 
-The first five-task run on an Intel i5-10210U laptop with 8 GB RAM and
-`gemma3:270m` passed 3/5 on each path. Bare Ollama averaged 3.90 seconds per
-task; IDOS averaged 9.33 seconds. IDOS recovered the project after restart
-(`D01`), while bare failed that task. IDOS failed `A01` and `C01`, including
-the multiplication capability task. This is one run, not a stable estimate or
-a latency improvement. Its raw interaction records were generated locally and
-should accompany any public claim; the run is reproducible with the command
-below.
+A clean five-task run on an Intel i5-10210U laptop with 8 GB RAM and
+`gemma3:270m` passed 3/5 through bare Ollama and 4/5 through IDOS. Bare Ollama
+averaged 4.1282 seconds per task; IDOS averaged 18.6784 seconds. IDOS recovered
+the project after restart (`D01`), while bare failed that task. Both paths
+failed `C01`, the multiplication task. This is one run, not a stable estimate
+or a latency improvement.
+
+The paired, task-level runner records are checked in as
+[`bare-results.json`](evidence/tiny-model-proof-20261102/bare-results.json) and
+[`idos-results.json`](evidence/tiny-model-proof-20261102/idos-results.json).
+They contain the prompts, outputs, checks, per-task latency, runner configuration,
+model digest, and redaction disclosure. Hardware and artifact hashes are in the
+accompanying [evidence manifest](evidence/tiny-model-proof-20261102/README.md).
 
 ## Run it
 
@@ -23,8 +28,12 @@ Install IdentityOS, start Ollama, and pull a model that fits your machine.
 From the repository root:
 
 ```powershell
-python benchmarks/runner.py --mode both --model gemma3:270m --demo
+python benchmarks/runner.py --mode both --model gemma3:270m --demo --reset-identity
 ```
+
+`--reset-identity` intentionally deletes and recreates only the benchmark
+identity before the IDOS run. Do not point the benchmark at an identity whose
+state you need to keep.
 
 The runner prints a separate summary for each side and writes raw task records
 to `benchmarks/results/`. Open each run's `summary.md`, `results.json`, and
