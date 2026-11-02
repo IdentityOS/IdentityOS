@@ -226,7 +226,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--model", default=None, help="Override model for --provider")
     p.add_argument(
         "--provider",
-        choices=("gemini", "groq", "deepseek"),
+        choices=("gemini", "groq", "deepseek", "ollama"),
         default=None,
         help="Force one coder (overnight: deepseek)",
     )
@@ -298,13 +298,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     time.sleep(args.retry_sleep)
                     continue
-                latest = latest_proposal_path()
-                if args.once and latest is not None:
-                    print(f"[autopilot] coder failed ({exc}); trying {latest}", file=sys.stderr)
-                    proposal = json.loads(latest.read_text(encoding="utf-8"))
-                else:
-                    print(f"[autopilot] coder failed: {exc}", file=sys.stderr)
-                    return 1
+                print(f"[autopilot] coder failed: {exc}", file=sys.stderr)
+                return 1
 
         if args.plan_only or args.dry_run:
             print(json.dumps(proposal, indent=2))

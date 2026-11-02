@@ -7,6 +7,7 @@ Env (prefer benchmarks/.env):
   GEMINI_API_KEY / GOOGLE_API_KEY + optional GEMINI_MODEL (default gemini-3.6-flash)
   GROQ_API_KEY (+ GROQ_API_KEY_2…) + optional GROQ_CODER_MODEL (default openai/gpt-oss-120b)
   DEEPSEEK_API_KEY + optional DEEPSEEK_CODER_MODEL (default deepseek-v4-flash)
+  OLLAMA_CODER_MODEL + optional OLLAMA_CODER_BASE_URL (local, opt-in)
 """
 
 from __future__ import annotations
@@ -186,10 +187,30 @@ def _call_deepseek(prompt: str, *, model: str | None, timeout_s: float) -> dict[
     )
 
 
+def _call_ollama(prompt: str, *, model: str | None, timeout_s: float) -> dict[str, Any]:
+    """Request a local code proposal; the frozen ratchet remains the judge."""
+    selected = model or os.environ.get("OLLAMA_CODER_MODEL")
+    if not selected:
+        raise CoderError("OLLAMA_CODER_MODEL not set")
+    base = os.environ.get("OLLAMA_CODER_BASE_URL", "http://127.0.0.1:11434/v1")
+    if not re.fullmatch(r"http://(?:localhost|127\.0\.0\.1)(?::\d+)?/v1/?", base):
+        raise CoderError("Ollama coder endpoint must be local loopback /v1")
+    return _openai_compatible_chat(
+        prompt=prompt,
+        base_url=base,
+        api_key="ollama",
+        model=selected,
+        timeout_s=timeout_s,
+        provider_label=f"Ollama({selected})",
+        max_tokens=2048,
+    )
+
+
 _PROVIDERS: dict[str, Callable[..., dict[str, Any]]] = {
     "gemini": _call_gemini,
     "groq": _call_groq,
     "deepseek": _call_deepseek,
+    "ollama": _call_ollama,
 }
 
 

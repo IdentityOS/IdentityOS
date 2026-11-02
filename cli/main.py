@@ -995,7 +995,13 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # Lazy-import the orchestrator
     try:
         from runtime.orchestrator import IdentityRuntime, InteractionRequest
-        runtime = IdentityRuntime(storage=storage, adapter=adapter)
+        runtime = IdentityRuntime(
+            storage=storage,
+            adapter=adapter,
+            max_context_tokens=args.context_tokens,
+            max_tools_per_request=args.max_tools,
+            max_tool_result_chars=args.tool_result_chars,
+        )
         runtime.load(resolved)
         session_id = runtime.start_session(resolved)
         runtime_ok = True
@@ -1152,6 +1158,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--id", required=True, help="Identity id (or name)")
     p_chat.add_argument("--adapter", default="", help="LLM adapter type: openai, anthropic, ollama, openrouter")
     p_chat.add_argument("--adapter-config", default="{}", help="JSON string with adapter config")
+    p_chat.add_argument("--context-tokens", type=int, default=4000, help="Identity context budget (default: 4000)")
+    p_chat.add_argument("--max-tools", type=int, default=8, help="Maximum relevant capabilities offered per turn (default: 8)")
+    p_chat.add_argument("--tool-result-chars", type=int, default=8000, help="Maximum capability result size (default: 8000)")
     p_chat.add_argument(
         "--model",
         default="gpt-4o",
