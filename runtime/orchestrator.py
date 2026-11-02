@@ -224,6 +224,7 @@ class IdentityRuntime:
         max_context_tokens: int = 4000,
         max_tool_result_chars: int = 8000,
         max_tools_per_request: int = 8,
+        generation_budget_seconds: Optional[float] = None,
         storage=None,
     ):
         self.identity_store = IdentityStore()
@@ -237,6 +238,10 @@ class IdentityRuntime:
         self.context_composer = ContextComposer(max_tokens=max_context_tokens)
         self.max_tool_result_chars = max(256, int(max_tool_result_chars))
         self.max_tools_per_request = max(1, int(max_tools_per_request))
+        self.generation_budget_seconds = (
+            max(0.1, float(generation_budget_seconds))
+            if generation_budget_seconds is not None else None
+        )
         self.motivation_engine = MotivationEngine()
         self.mutation_engine = IdentityMutationEngine(min_confidence=0.5)
         self.timeline_registry = TimelineRegistry()
@@ -1014,12 +1019,13 @@ class IdentityRuntime:
         # ── NATIVE TOOL CALLING SETUP ─────────────────────────────────
         user_profile = self._get_user_profile(identity.id, user_id)
         session_fact_store = self._get_fact_store_for_session(identity.id, session_id)
-        cap_prompts = self.capability_registry.all_prompts(identity.id)
-
         _tool_defs, _tool_map = self.capability_registry.tool_catalog(
             identity.id,
             query=sanitized_input,
             limit=self.max_tools_per_request,
+        )
+        cap_prompts = self.capability_registry.prompts_for_skills(
+            identity.id, set(_tool_map.values())
         )
         _evidence_results: List[Dict[str, Any]] = []
         if _reflex_dispatch is not None:
@@ -1215,6 +1221,13 @@ class IdentityRuntime:
             if _grounding_snapshot is not None:
                 from adapters.contracts import options
                 generate_kwargs.update(options(self.adapter, _grounding_snapshot))
+            if self.generation_budget_seconds is not None:
+                existing_budget = generate_kwargs.get("_generation_budget")
+                generate_kwargs["_generation_budget"] = min(
+                    self.generation_budget_seconds,
+                    float(existing_budget) if existing_budget is not None
+                    else self.generation_budget_seconds,
+                )
             model_input = user_profile.augment_recall_input(sanitized_input)
             from adapters.contracts import compatible_kwargs
             generate_kwargs = compatible_kwargs(self.adapter, generate_kwargs)

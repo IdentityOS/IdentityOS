@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -962,6 +963,31 @@ class TestOllamaAdapter:
         assert "tools" not in first_call[1]
         assert first_call[1]["extra_body"] == {"think": False}
 
+    def test_legacy_tool_rounds_share_one_generation_budget(self):
+        observed_budgets = []
+
+        def parent_generate(*args, **kwargs):
+            observed_budgets.append(kwargs["_generation_budget"])
+            if len(observed_budgets) == 1:
+                time.sleep(0.01)
+                return '<function=calc__evaluate>{"expression":"2+2"}</function>'
+            return "4"
+
+        adapter = OllamaAdapter(model="legacy-model", prefer_legacy_tools=True)
+        with patch.object(OpenAIAdapter, "generate", side_effect=parent_generate):
+            output = adapter.generate(
+                context="Use tools.",
+                user_input="Calculate 2+2",
+                identity=_MockIdentity(),
+                tools=[{"type": "function", "function": {"name": "calc__evaluate"}}],
+                execute_tool=lambda name, args: "4",
+                _generation_budget=1.0,
+            )
+
+        assert output == "4"
+        assert len(observed_budgets) == 2
+        assert 0 < observed_budgets[1] < observed_budgets[0] <= 1.0
+
     def test_legacy_tool_loop_stops_at_configured_round_limit(
         self, mock_openai_client
     ):
@@ -1175,7 +1201,9 @@ class TestOllamaModelHelpers:
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
         assert list_ollama_models() == ["smollm2:360m-instruct-q4_0"]
 
-    def test_ollama_model_capabilities_uses_resolved_model_name(self, monkeypatch):
+    def test_ollama_model_capabilities_uses_show_endpoint(self, monkeypatch):
+        observed = {}
+
         class _Resp:
             def __enter__(self):
                 return self
@@ -1185,22 +1213,45 @@ class TestOllamaModelHelpers:
 
             def read(self):
                 return json.dumps(
-                    {
-                        "models": [
-                            {
-                                "name": "qwen3:4b",
-                                "capabilities": ["completion", "tools", "thinking"],
-                            }
-                        ]
-                    }
+                    {"capabilities": ["completion", "tools", "thinking"]}
                 ).encode()
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+        def _open(request, **kwargs):
+            observed["url"] = request.full_url
+            observed["body"] = json.loads(request.data.decode())
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", _open)
         assert ollama_model_capabilities("qwen3") == {
             "completion",
             "tools",
             "thinking",
         }
+        assert observed == {
+            "url": "http://localhost:11434/api/show",
+            "body": {"model": "qwen3"},
+        }
+
+    def test_ollama_defaults_to_capability_detected_native_tools(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_PREFER_LEGACY_TOOLS", raising=False)
+        probe = MagicMock(return_value={"completion", "tools"})
+        monkeypatch.setattr("adapters.openai_adapter.ollama_model_capabilities", probe)
+
+        adapter = OllamaAdapter(model="qwen3:4b")
+
+        assert adapter._native_tools_supported() is True
+        assert adapter._native_tools_supported() is True
+        probe.assert_called_once()
+
+    def test_ollama_explicit_legacy_override_skips_probe(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_PREFER_LEGACY_TOOLS", "legacy")
+        probe = MagicMock(return_value={"completion", "tools"})
+        monkeypatch.setattr("adapters.openai_adapter.ollama_model_capabilities", probe)
+
+        adapter = OllamaAdapter(model="qwen3:4b")
+
+        assert adapter._native_tools_supported() is False
+        probe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

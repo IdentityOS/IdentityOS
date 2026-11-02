@@ -47,6 +47,7 @@ def build_comparison_signature(config: dict[str, Any]) -> str:
         "tool_rounds": config.get("tool_rounds"),
         "request_interval_seconds": config.get("request_interval_seconds"),
         "cooldown_wait_seconds": config.get("cooldown_wait_seconds"),
+        "request_timeout_seconds": config.get("request_timeout_seconds"),
     }
     encoded = json.dumps(dimensions, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

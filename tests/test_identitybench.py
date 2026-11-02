@@ -274,6 +274,7 @@ class TestEngine:
             "IDENTITYBENCH_TOOLS_PER_REQUEST": "2",
             "IDENTITYBENCH_TOOL_ROUNDS": "1",
             "IDENTITYBENCH_COOLDOWN_WAIT_SECONDS": "25",
+            "IDENTITYBENCH_REQUEST_TIMEOUT_SECONDS": "12.5",
         }
 
         with tempfile.TemporaryDirectory() as td:
@@ -286,6 +287,7 @@ class TestEngine:
                 engine.load_identity()
 
         assert runtime_type.call_args.kwargs["max_tools_per_request"] == 2
+        assert runtime_type.call_args.kwargs["generation_budget_seconds"] == 12.5
         assert adapter.max_tool_rounds == 1
         assert adapter._MAX_COOLDOWN_WAIT == 25.0
 
@@ -551,6 +553,13 @@ class TestCLI:
         assert args.command == "compare"
         assert args.identity_id == "gabe"
         assert args.last == 8
+
+    def test_cli_parse_total_request_timeout(self):
+        from identitybench.cli import build_parser
+        args = build_parser().parse_args([
+            "run", "local-bot", "--request-timeout", "30",
+        ])
+        assert args.request_timeout == 30.0
 
 
 class TestBenchmarkProvenance:
