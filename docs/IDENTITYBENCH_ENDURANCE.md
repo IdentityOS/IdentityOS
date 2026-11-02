@@ -52,6 +52,12 @@ a model-specific native parser problem. The runtime relevance-bounds both tool
 schemas and their capability prompts, so installing more capabilities does not
 make every unrelated interaction progressively slower.
 
+The request timeout is a caller-visible wall-clock deadline, not only an HTTP
+inactivity timeout. It includes lazy client setup, Ollama capability detection,
+provider retries, and all tool rounds. When the deadline expires, IdentityOS
+returns control immediately, detaches the timed-out client, and refuses to run
+tool callbacks from a response that arrives after the deadline.
+
 The request interval defaults to zero for providers without a benchmark-specific
 policy and to 35 seconds for Groq, where a single interaction may require more
 than one provider request to complete a capability call. Every run records the

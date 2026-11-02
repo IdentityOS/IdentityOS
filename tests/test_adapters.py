@@ -20,7 +20,7 @@ sys.modules["openai"] = _openai_mock
 sys.modules["anthropic"] = _anthropic_mock
 
 from adapters.base import BaseAdapter  # noqa: E402
-from adapters.openai_adapter import OpenAIAdapter, AnthropicAdapter, OllamaAdapter, list_ollama_models, ollama_model_capabilities, resolve_ollama_model  # noqa: E402
+from adapters.openai_adapter import OpenAIAdapter, AnthropicAdapter, OllamaAdapter, _compact_tool_schema, list_ollama_models, ollama_model_capabilities, resolve_ollama_model  # noqa: E402
 from adapters.openrouter_adapter import OpenRouterAdapter  # noqa: E402
 from adapters import get_adapter  # noqa: E402
 
@@ -165,12 +165,76 @@ finally:
     client.close()
 '''], check=True, timeout=30)
 
+    def test_generation_budget_bounds_a_trickling_http_response(self):
+        # A read timeout never fires while bytes keep arriving. Verify the
+        # adapter's caller-visible deadline, not merely the transport phase.
+        import subprocess
+        subprocess.run([sys.executable, "-c", r'''
+import socket, threading, time
+from adapters.openai_adapter import OpenAIAdapter
+
+server = socket.socket()
+server.bind(('127.0.0.1', 0))
+server.listen()
+received = threading.Event()
+release = threading.Event()
+
+def trickle():
+    conn, _ = server.accept()
+    with conn:
+        conn.recv(65536)
+        received.set()
+        conn.sendall(
+            b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+            b'Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n'
+        )
+        while not release.is_set():
+            try:
+                conn.sendall(b'1\r\n \r\n')
+            except OSError:
+                break
+            time.sleep(.03)
+
+threading.Thread(target=trickle, daemon=True).start()
+adapter = OpenAIAdapter(
+    api_key='test-local', timeout=5,
+    base_url=f'http://127.0.0.1:{server.getsockname()[1]}/v1',
+)
+adapter._get_client()  # isolate the trickled response from cold SDK import noise
+started = time.monotonic()
+try:
+    adapter.generate('system', 'hello', None, _generation_budget=.3)
+except TimeoutError as exc:
+    elapsed = time.monotonic() - started
+    assert 'generation deadline reached' in str(exc)
+    assert .2 <= elapsed < .9, elapsed
+    assert received.wait(.5), 'request never reached trickling server'
+else:
+    raise AssertionError('trickling response exceeded the wall-clock budget')
+finally:
+    release.set()
+    server.close()
+'''], check=True, timeout=10)
+
     def test_timeout_defaults_from_environment(self, monkeypatch):
         monkeypatch.setenv("OPENAI_TIMEOUT", "19.25")
 
         adapter = OpenAIAdapter(api_key="sk-test")
 
         assert adapter.timeout == 19.25
+
+    def test_generation_budget_includes_lazy_client_setup(self, monkeypatch):
+        adapter = OpenAIAdapter(api_key="sk-test")
+
+        def slow_client_setup():
+            time.sleep(.4)
+            return MagicMock()
+
+        monkeypatch.setattr(adapter, "_get_client", slow_client_setup)
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="generation deadline reached"):
+            adapter.generate("system", "hello", _MockIdentity(), _generation_budget=.1)
+        assert time.monotonic() - started < .35
 
     @pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf")])
     def test_explicit_invalid_timeout_is_rejected(self, value):
@@ -872,6 +936,27 @@ class TestOllamaAdapter:
         with pytest.raises(ValueError, match="OPENAI_TIMEOUT must be a positive number"):
             OllamaAdapter(timeout=0)
 
+    def test_generation_budget_includes_native_capability_probe(self, monkeypatch):
+        def slow_probe(*args, **kwargs):
+            time.sleep(.4)
+            return {"completion", "tools"}
+
+        monkeypatch.setattr(
+            "adapters.openai_adapter.ollama_model_capabilities", slow_probe
+        )
+        adapter = OllamaAdapter(model="slow-probe", prefer_legacy_tools=False)
+        started = time.monotonic()
+
+        with pytest.raises(TimeoutError, match="generation deadline reached"):
+            adapter.generate(
+                "system", "hello", _MockIdentity(),
+                tools=[{"type": "function", "function": {"name": "noop"}}],
+                execute_tool=lambda name, args: "ok",
+                _generation_budget=.1,
+            )
+
+        assert time.monotonic() - started < .35
+
     def test_generate(self, mock_openai_client):
         adapter = OllamaAdapter(model="llama3.2")
         result = adapter.generate(
@@ -969,7 +1054,7 @@ class TestOllamaAdapter:
         def parent_generate(*args, **kwargs):
             observed_budgets.append(kwargs["_generation_budget"])
             if len(observed_budgets) == 1:
-                time.sleep(0.01)
+                time.sleep(0.1)
                 return '<function=calc__evaluate>{"expression":"2+2"}</function>'
             return "4"
 
@@ -1177,6 +1262,37 @@ class TestOllamaAdapter:
 
 
 class TestOllamaModelHelpers:
+    def test_compact_tool_schema_preserves_constraints_not_prompt_prose(self):
+        compact = _compact_tool_schema({
+            "type": "object",
+            "description": "long prose",
+            "required": ["query"],
+            "additionalProperties": False,
+            "properties": {
+                "query": {
+                    "type": "string", "description": "more prose",
+                    "minLength": 2, "maxLength": 20,
+                },
+                "mode": {"anyOf": [
+                    {"type": "string", "enum": ["fast", "safe"]},
+                    {"type": "null"},
+                ]},
+                "items": {
+                    "type": "array", "minItems": 1, "maxItems": 3,
+                    "items": {"type": "integer", "minimum": 0, "maximum": 9},
+                },
+            },
+        })
+
+        assert compact["required"] == ["query"]
+        assert compact["additionalProperties"] is False
+        assert compact["properties"]["query"] == {
+            "type": "string", "minLength": 2, "maxLength": 20,
+        }
+        assert compact["properties"]["mode"]["anyOf"][0]["enum"] == ["fast", "safe"]
+        assert compact["properties"]["items"]["items"]["maximum"] == 9
+        assert "description" not in json.dumps(compact)
+
     def test_resolve_exact_match(self):
         models = ["llama3.2:latest", "smollm2:360m-instruct-q4_0"]
         assert resolve_ollama_model("smollm2:360m-instruct-q4_0", models) == "smollm2:360m-instruct-q4_0"

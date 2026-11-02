@@ -5,7 +5,9 @@ import json
 import logging
 import math
 import os
+import queue
 import re
+import threading
 import time as _time
 from typing import Any, Optional
 
@@ -17,6 +19,52 @@ logger = logging.getLogger(__name__)
 # (e.g. Llama on Groq) emit instead of native JSON tool_calls:
 #   <function=executive__start_task>{'goal': '...'}</function>
 _LEGACY_FUNCTION_RE = re.compile(r"<function=([^>]+)>(.*?)</function>", re.DOTALL)
+
+
+def _run_with_wall_clock_deadline(
+    operation: Any,
+    budget: float,
+    *,
+    on_timeout: Optional[Any] = None,
+) -> Any:
+    """Return or raise within a caller-visible wall-clock budget.
+
+    HTTP read timeouts measure inactivity, so a server can keep a synchronous
+    client alive indefinitely by trickling bytes. Run the complete operation in
+    a daemon worker and make the calling thread authoritative for elapsed time.
+    The adapter's internal deadline checks remain responsible for preventing a
+    late response from executing tools after the caller has timed out.
+    """
+    seconds = max(0.1, float(budget))
+    result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def invoke() -> None:
+        try:
+            result.put((True, operation()), block=False)
+        except BaseException as exc:  # propagate the original provider error
+            result.put((False, exc), block=False)
+
+    threading.Thread(target=invoke, daemon=True, name="identityos-generation").start()
+    try:
+        succeeded, value = result.get(timeout=seconds)
+    except queue.Empty as exc:
+        if on_timeout is not None:
+            threading.Thread(
+                target=on_timeout,
+                daemon=True,
+                name="identityos-generation-abort",
+            ).start()
+        raise TimeoutError(
+            f"generation deadline reached after {seconds:g}s"
+        ) from exc
+    if succeeded:
+        return value
+    raise value
+
+
+def _require_time_remaining(deadline: Optional[float]) -> None:
+    if deadline is not None and _time.monotonic() >= deadline:
+        raise TimeoutError("generation deadline reached")
 
 
 def _is_token_limit_error(msg: str) -> bool:
@@ -459,12 +507,49 @@ class OpenAIAdapter(BaseAdapter):
                 raise ImportError("openai package not found. Install with: pip install openai")
         return self._client
 
+    def _abort_active_client(self) -> None:
+        """Detach and close a timed-out client without delaying the caller."""
+        client = self._client
+        self._client = None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                logger.debug("Timed-out provider client did not close cleanly", exc_info=True)
+
     @property
     def structured_output(self):
         value = self.config.get("structured_output", "prompt_only")
         return value if value in {"prompt_only", "json_object", "json_schema"} else "prompt_only"
 
     def generate(
+        self,
+        context: str,
+        user_input: str,
+        identity: Any,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        retries: int = 3,
+        **kwargs
+    ) -> str:
+        budget = kwargs.get("_generation_budget")
+        if budget is None:
+            return self._generate(
+                context, user_input, identity,
+                temperature=temperature, max_tokens=max_tokens,
+                retries=retries, **kwargs,
+            )
+        return _run_with_wall_clock_deadline(
+            lambda: self._generate(
+                context, user_input, identity,
+                temperature=temperature, max_tokens=max_tokens,
+                retries=retries, **kwargs,
+            ),
+            float(budget),
+            on_timeout=self._abort_active_client,
+        )
+
+    def _generate(
         self,
         context: str,
         user_input: str,
@@ -638,6 +723,7 @@ class OpenAIAdapter(BaseAdapter):
                         continue
                     recovered_tool = None
                     if execute_tool and tool_rounds < self.max_tool_rounds:
+                        _require_time_remaining(deadline)
                         recovered_tool = self._recover_rejected_tool_call(
                             msg, messages, execute_tool
                         )
@@ -708,6 +794,7 @@ class OpenAIAdapter(BaseAdapter):
                 messages.append(assistant_msg)
 
                 for tool_call in message.tool_calls:
+                    _require_time_remaining(deadline)
                     func_name = tool_call.function.name
                     try:
                         func_args = json.loads(tool_call.function.arguments)
@@ -1095,6 +1182,27 @@ class OllamaAdapter(OpenAIAdapter):
         think: Optional[bool] = None,
         **kwargs
     ) -> str:
+        budget = kwargs.get("_generation_budget")
+        if budget is None:
+            return self._generate_ollama(
+                context, user_input, identity, think=think, **kwargs
+            )
+        return _run_with_wall_clock_deadline(
+            lambda: self._generate_ollama(
+                context, user_input, identity, think=think, **kwargs
+            ),
+            float(budget),
+            on_timeout=self._abort_active_client,
+        )
+
+    def _generate_ollama(
+        self,
+        context: str,
+        user_input: str,
+        identity: Any,
+        think: Optional[bool] = None,
+        **kwargs
+    ) -> str:
         execute_tool = kwargs.pop("execute_tool", None)
         tools = kwargs.pop("tools", None) or []
         budget = kwargs.pop("_generation_budget", None)
@@ -1135,6 +1243,7 @@ class OllamaAdapter(OpenAIAdapter):
             self._supports_native_tools = False
             evidence_blocks: list[str] = []
             for name, arguments in text_calls:
+                _require_time_remaining(deadline)
                 try:
                     result = execute_tool(name, arguments)
                 except Exception as exc:
@@ -1214,6 +1323,7 @@ class OllamaAdapter(OpenAIAdapter):
 
             evidence_blocks: list[str] = []
             for name, args in calls:
+                _require_time_remaining(deadline)
                 try:
                     result = execute_tool(name, args)
                 except Exception as exc:
