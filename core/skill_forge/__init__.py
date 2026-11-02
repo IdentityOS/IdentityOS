@@ -14,6 +14,12 @@ from .service import (
     SkillForge,
     SkillForgeError,
 )
+from .self_improvement import (
+    PushApprovalRequired,
+    PushInvitationAuthority,
+    PushInvitationCredential,
+    SelfImprovementPipeline,
+)
 
 __all__ = [
     "AcceptanceCase",
@@ -26,4 +32,8 @@ __all__ = [
     "ModelCapabilityTestDesigner",
     "SkillForge",
     "SkillForgeError",
+    "PushApprovalRequired",
+    "PushInvitationAuthority",
+    "PushInvitationCredential",
+    "SelfImprovementPipeline",
 ]

@@ -141,6 +141,25 @@ class SkillForge:
         return self.workspace_root / ".identity_forge" / "artifacts"
 
     def forge(self, request: ForgeRequest, *, identity: Any = None) -> ForgeResult:
+        """Forge, verify, package, and materialize source for legacy callers."""
+        return self._forge(request, identity=identity, materialize_source=True)
+
+    def forge_candidate(self, request: ForgeRequest, *, identity: Any = None) -> ForgeResult:
+        """Forge a verified artifact without making its source importable.
+
+        Self-improvement uses this entry point so authoring alone cannot add a
+        capability to the running workspace. Publication remains a separately
+        authorized transition.
+        """
+        return self._forge(request, identity=identity, materialize_source=False)
+
+    def _forge(
+        self,
+        request: ForgeRequest,
+        *,
+        identity: Any = None,
+        materialize_source: bool,
+    ) -> ForgeResult:
         cases = list(request.acceptance_cases) or self.test_designer.design(request, identity)
         self._validate_cases(request, cases)
         proposal = self.author.author(request, identity)
@@ -175,15 +194,19 @@ class SkillForge:
         if observed_digest != digest:
             raise SkillForgeError("packaged bytes differed from tested bytes")
 
-        source_path = self.workspace_root / "core" / "capabilities" / request.capability_id / "__init__.py"
-        if source_path.exists():
-            raise SkillForgeError(f"refusing to overwrite existing capability source: {source_path}")
-        source_path.parent.mkdir(parents=True, exist_ok=False)
-        try:
+        if materialize_source:
+            source_path = self.workspace_root / "core" / "capabilities" / request.capability_id / "__init__.py"
+            if source_path.exists():
+                raise SkillForgeError(f"refusing to overwrite existing capability source: {source_path}")
+            source_path.parent.mkdir(parents=True, exist_ok=False)
+            try:
+                source_path.write_text(source, encoding="utf-8")
+            except Exception:
+                source_path.parent.rmdir()
+                raise
+        else:
+            source_path = artifact_path.parent / "candidate.py"
             source_path.write_text(source, encoding="utf-8")
-        except Exception:
-            source_path.parent.rmdir()
-            raise
         return ForgeResult(
             capability_id=request.capability_id,
             artifact_path=str(artifact_path),
@@ -220,6 +243,12 @@ class SkillForge:
                 "PYTHONHASHSEED": "0",
                 "TMPDIR": isolated,
             }
+            # Windows' pathlib.home() requires these non-secret location
+            # variables during imports. Keep the isolated environment narrow
+            # while allowing cross-platform capability API initialization.
+            for name in ("SYSTEMDRIVE", "HOMEDRIVE", "HOMEPATH", "USERPROFILE"):
+                if os.environ.get(name):
+                    env[name] = os.environ[name]
             try:
                 # argv is fixed; there is no shell or model-supplied executable.
                 completed = subprocess.run(  # nosec B603

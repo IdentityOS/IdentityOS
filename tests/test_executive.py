@@ -128,6 +128,14 @@ def _run_until_terminal(eng, identity, task_id, cap=200):
     while guard < cap:
         eng.process_ready(identity)
         t = eng.get_task(identity, task_id)
+        publish = t.step_by_id("publish")
+        if (
+            t.status == TaskStatus.BLOCKED
+            and publish is not None
+            and publish.result.get("block_type") == "push_invitation_required"
+        ):
+            credential = eng.create_push_invitation(identity, task_id)
+            t = eng.resume_with_push_invitation(identity, task_id, credential)
         if t.status.value in ("completed", "failed", "cancelled"):
             return t
         guard += 1
@@ -140,6 +148,7 @@ def _cleanup_generated(cap_id):
         f"core/capabilities/{cap_id}",
         f"registry/capabilities/{cap_id}",
         f".identity_forge/artifacts/{cap_id}",
+        f".identity_forge/published",
     ):
         p = os.path.normpath(os.path.join(root, rel))
         if os.path.isdir(p):
@@ -372,11 +381,38 @@ def test_full_acquisition_flow_with_evidence(engine, fresh_cap):
     for expected in (
         "behavioral_tests_isolated", "artifact_packaged", "file_generated",
         "syntax_valid", "interface_valid",
-        "registry_published", "installed", "capability_activated",
+        "self_improvement_published", "installed", "capability_activated",
         "safe_probe_invoked", "installation_persisted",
         "capability_reloaded", "capability_reused",
     ):
         assert expected in labels, f"missing evidence label {expected}"
+
+
+def test_generated_capability_blocks_before_external_push_invitation(engine, fresh_cap):
+    task = engine.start_task(
+        f"create a {fresh_cap} capability and install it",
+        "tester",
+        original_request=f"create a {fresh_cap} capability and install it",
+    )
+    while True:
+        engine.process_ready("tester")
+        observed = engine.get_task("tester", task.task_id)
+        if observed.status == TaskStatus.BLOCKED:
+            break
+
+    publish = observed.step_by_id("publish")
+    assert publish.result["block_type"] == "push_invitation_required"
+    assert engine.capability_registry.get("tester", fresh_cap) is None
+    assert not os.path.exists(
+        os.path.join(os.path.dirname(__file__), "..", "core", "capabilities", fresh_cap)
+    )
+
+    credential = engine.create_push_invitation("tester", task.task_id)
+    assert credential.token not in str(engine.get_task("tester", task.task_id).to_dict())
+    engine.resume_with_push_invitation("tester", task.task_id, credential)
+    final = _run_until_terminal(engine, "tester", task.task_id)
+    assert final.status == TaskStatus.COMPLETED
+    assert engine.capability_registry.get("tester", fresh_cap) is not None
 
 
 def test_marketplace_found_skips_generation(engine):

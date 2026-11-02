@@ -74,6 +74,18 @@ class ExecutiveRuntime:
         self.storage = storage
         self.capability_registry = capability_registry
         self.skill_forge = skill_forge
+        self.push_invitation_authority = None
+        self.self_improvement_pipeline = None
+        if skill_forge is not None and capability_registry is not None:
+            from core.skill_forge import PushInvitationAuthority, SelfImprovementPipeline
+            self.push_invitation_authority = PushInvitationAuthority(storage)
+            self.self_improvement_pipeline = SelfImprovementPipeline(
+                skill_forge.workspace_root,
+                forge=skill_forge,
+                authority=self.push_invitation_authority,
+                storage=storage,
+                capability_registry=capability_registry,
+            )
         self.embodiment_hub = embodiment_hub
         self.store = TaskStore(storage)
         self._ctx_cache: dict[str, ExecutionContext] = {}
@@ -95,12 +107,14 @@ class ExecutiveRuntime:
                 storage=self.storage,
                 runtime=runtime,
                 skill_forge=self.skill_forge,
+                self_improvement_pipeline=self.self_improvement_pipeline,
                 embodiment_hub=self.embodiment_hub,
             )
         else:
             if runtime is not None:
                 self._ctx_cache[identity_id].runtime = runtime
             self._ctx_cache[identity_id].embodiment_hub = self.embodiment_hub
+            self._ctx_cache[identity_id].self_improvement_pipeline = self.self_improvement_pipeline
         return self._ctx_cache[identity_id]
 
     # ── Task lifecycle API ────────────────────────────────────────────
@@ -272,6 +286,51 @@ class ExecutiveRuntime:
 
     def task_progress(self, identity_id: str, task_id: str) -> dict:
         return self.task_status(identity_id, task_id)
+
+    def create_push_invitation(
+        self,
+        identity_id: str,
+        task_id: str,
+        *,
+        ttl_seconds: float = 900,
+    ) -> Any:
+        """External-control API: approve exactly the artifact staged by a task.
+
+        This method is intentionally absent from model capabilities. The raw
+        token is returned once to the approving pusher and is never put in the
+        durable task document.
+        """
+        if self.push_invitation_authority is None:
+            raise RuntimeError("self-improvement pipeline is unavailable")
+        task = self.require(identity_id, task_id)
+        generated = task.step_by_id("generate")
+        if generated is None or not generated.result.get("artifact_sha256"):
+            raise ValueError("task has no independently verified staged artifact")
+        return self.push_invitation_authority.issue(
+            identity_id=identity_id,
+            capability_id=str(task.capability_id or generated.result.get("capability_id", "")),
+            artifact_sha256=str(generated.result["artifact_sha256"]),
+            ttl_seconds=ttl_seconds,
+        )
+
+    def resume_with_push_invitation(
+        self,
+        identity_id: str,
+        task_id: str,
+        credential: Any,
+    ) -> Task:
+        """Present a one-use invitation in memory and resume the blocked task."""
+        task = self.require(identity_id, task_id)
+        publish = task.step_by_id("publish")
+        if (
+            task.status != TaskStatus.BLOCKED
+            or publish is None
+            or publish.status != TaskStepStatus.BLOCKED
+            or publish.result.get("block_type") != "push_invitation_required"
+        ):
+            raise IllegalTransition("task is not awaiting a push invitation")
+        self._ctx(identity_id).push_credentials[task_id] = credential
+        return self.resume_task(identity_id, task_id)
 
     def history(self, identity_id: str, limit: int = 10) -> list[dict]:
         tasks = self.store.load_terminal(identity_id)

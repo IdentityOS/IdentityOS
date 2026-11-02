@@ -107,3 +107,18 @@ class ForgeResult:
             "acceptance_cases": [case.to_dict() for case in self.acceptance_cases],
             "isolation_report": self.isolation_report,
         }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ForgeResult":
+        return cls(
+            capability_id=str(raw["capability_id"]),
+            artifact_path=str(raw["artifact_path"]),
+            artifact_sha256=str(raw["artifact_sha256"]),
+            source_path=str(raw["source_path"]),
+            manifest=dict(raw["manifest"]),
+            acceptance_cases=tuple(
+                AcceptanceCase.from_dict(case)
+                for case in raw.get("acceptance_cases", [])
+            ),
+            isolation_report=dict(raw.get("isolation_report", {})),
+        )

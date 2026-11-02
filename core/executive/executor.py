@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +34,8 @@ class ExecutionContext:
     storage: Any
     runtime: Any = None
     skill_forge: Any = None
+    self_improvement_pipeline: Any = None
+    push_credentials: dict[str, Any] = field(default_factory=dict)
     embodiment_hub: Any = None
 
 
@@ -230,7 +231,7 @@ def _generate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, 
         from core.skill_forge import ForgeRequest
 
         identity = ctx.runtime.load(ctx.identity_id) if ctx.runtime is not None else None
-        result = forge.forge(ForgeRequest(
+        result = forge.forge_candidate(ForgeRequest(
             capability_id=cap,
             goal=task.original_request or task.goal,
             identity_id=ctx.identity_id,
@@ -263,9 +264,9 @@ def _generate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, 
             Evidence(
                 step=step.action,
                 label="file_generated",
-                detail=f"wrote tested source {result.source_path} ({path.stat().st_size} bytes)",
+                detail=f"staged tested source {result.source_path} ({Path(result.source_path).stat().st_size} bytes)",
                 success=True,
-                data={"path": result.source_path, "bytes": path.stat().st_size},
+                data={"path": result.source_path, "bytes": Path(result.source_path).stat().st_size},
             ),
         ]
         return (True, result.to_dict(), evidence)
@@ -281,7 +282,9 @@ def _generate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, 
 
 def _validate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
     cap = _resolve_capability(task, step)
-    path = capability_module_path(cap)
+    generated = task.step_by_id("generate")
+    generated_result = generated.result if generated is not None else {}
+    path = Path(generated_result.get("source_path") or capability_module_path(cap))
     evidence: list = []
     ok = True
     try:
@@ -292,11 +295,26 @@ def _validate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, 
         ok = False
         evidence.append(Evidence(step=step.action, label="syntax_valid", detail=f"invalid syntax: {e}", success=False, data={"error": str(e)}))
     try:
-        from core.capabilities.registry import lookup
-        import importlib
-        importlib.import_module(f"core.capabilities.{cap}")
-        lookup(cap)
-        evidence.append(Evidence(step=step.action, label="interface_valid", detail=f"{cap} imports and registers", success=True))
+        if generated_result:
+            from core.skill_forge.artifacts import package_record
+            from core.skill_forge.audit import audit_source
+            record = package_record(str(generated_result.get("artifact_path", "")))
+            if record.get("artifact_sha256") != generated_result.get("artifact_sha256"):
+                raise ValueError("staged artifact digest changed after isolated verification")
+            manifest = record.get("manifest", {})
+            issues = audit_source(
+                str(record.get("source", "")),
+                set(manifest.get("permissions", [])),
+                set(manifest.get("dependencies", [])),
+            )
+            if issues:
+                raise ValueError("staged source audit failed: " + "; ".join(issues))
+        else:
+            from core.capabilities.registry import lookup
+            import importlib
+            importlib.import_module(f"core.capabilities.{cap}")
+            lookup(cap)
+        evidence.append(Evidence(step=step.action, label="interface_valid", detail=f"{cap} artifact and capability contract remain valid", success=True))
     except Exception as e:
         ok = False
         evidence.append(Evidence(step=step.action, label="interface_valid", detail=f"import/register failed: {e}", success=False, data={"error": str(e)}))
@@ -306,49 +324,67 @@ def _validate(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, 
 def _publish(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
     cap = step.params.get("capability", "")
     try:
-        from core.capabilities.registry import lookup
         generated = task.step_by_id("generate")
         generated_result = generated.result if generated is not None else {}
-        generated_manifest = generated_result.get("manifest", {})
-        rmgmt = lookup("registry_manager")()
-        res = rmgmt.call(
-            "registry_manager.publish_capability",
-            cap_id=cap,
-            name=generated_manifest.get("name", cap.replace("_", " ").title()),
-            version=generated_manifest.get("version", "1.0.0"),
-            description=generated_manifest.get("description", f"Forged capability: {cap}"),
-            skills=generated_manifest.get("skills", []),
-        )
-        success = bool(getattr(res, "success", False)) or "published" in str(getattr(res, "data", {}))
-        artifact_destination = None
-        artifact_source = generated_result.get("artifact_path")
-        if success and artifact_source:
-            artifact_destination = _REPO_ROOT / "registry" / "capabilities" / cap / "capability.idcap"
-            shutil.copyfile(artifact_source, artifact_destination)
-            manifest_path = artifact_destination.parent / "manifest.json"
-            published_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            published_manifest["dependencies"] = generated_manifest.get("dependencies", [])
-            published_manifest["forge_permissions"] = generated_manifest.get("permissions", [])
-            published_manifest["artifact"] = "capability.idcap"
-            published_manifest["artifact_sha256"] = generated_result.get("artifact_sha256")
-            published_manifest["behaviorally_verified"] = True
-            manifest_path.write_text(json.dumps(published_manifest, indent=2) + "\n", encoding="utf-8")
-        evidence = [Evidence(
-            step=step.action, label="registry_published",
-            detail=f"{cap} published ({getattr(res, 'data', {})})", success=success,
-            data={
-                **(
-                    getattr(res, "data", {})
-                    if isinstance(getattr(res, "data", {}), dict)
-                    else {"result": str(getattr(res, "data", ""))}
-                ),
-                "artifact": str(artifact_destination) if artifact_destination else None,
+        pipeline = ctx.self_improvement_pipeline
+        credential = (ctx.push_credentials or {}).pop(task.task_id, None)
+        if pipeline is None:
+            raise RuntimeError("self-improvement pipeline is unavailable")
+        if credential is None:
+            return (False, {
+                "blocked": True,
+                "resumable": True,
+                "block_type": "push_invitation_required",
+                "reason": "an external push invitation is required",
+                "capability": cap,
                 "artifact_sha256": generated_result.get("artifact_sha256"),
-            },
-        )]
-        return (success, {"published": success}, evidence)
+            }, [Evidence(
+                step=step.action,
+                label="push_invitation_required",
+                detail=f"{cap} remains staged; no publication or installation occurred",
+                success=False,
+                data={"capability": cap, "artifact_sha256": generated_result.get("artifact_sha256")},
+            )])
+        from core.skill_forge import ForgeResult
+        receipt = pipeline.publish_and_install(
+            ForgeResult.from_dict(generated_result),
+            identity_id=ctx.identity_id,
+            credential=credential,
+        )
+        return (True, {"published": True, "receipt": receipt}, [Evidence(
+            step=step.action,
+            label="self_improvement_published",
+            detail=f"{cap} published and installed with one exact-artifact invitation",
+            success=True,
+            data=receipt,
+        )])
     except Exception as e:
-        return (False, {}, [Evidence(step=step.action, label="registry_published", detail=f"publish failed: {e}", success=False, data={"error": str(e)})])
+        from core.skill_forge import PushApprovalRequired
+        if isinstance(e, PushApprovalRequired):
+            return (False, {
+                "blocked": True,
+                "resumable": True,
+                "block_type": "push_invitation_required",
+                "reason": str(e),
+                "capability": cap,
+                "artifact_sha256": (
+                    task.step_by_id("generate").result.get("artifact_sha256")
+                    if task.step_by_id("generate") is not None else None
+                ),
+            }, [Evidence(
+                step=step.action,
+                label="push_invitation_rejected",
+                detail=str(e),
+                success=False,
+                data={"capability": cap},
+            )])
+        return (False, {}, [Evidence(
+            step=step.action,
+            label="self_improvement_failed",
+            detail=f"publication failed: {type(e).__name__}: {e}",
+            success=False,
+            data={"error": str(e)},
+        )])
 
 
 def _resolve_capability(task: Task, step: TaskStep) -> str:
@@ -368,15 +404,15 @@ def _resolve_capability(task: Task, step: TaskStep) -> str:
 def _install(task: Task, step: TaskStep, ctx: ExecutionContext) -> tuple[bool, dict, list]:
     cap = _resolve_capability(task, step)
     try:
-        import importlib
-        from core.capabilities.registry import lookup
-        importlib.import_module(f"core.capabilities.{cap}")  # fires @register
-        lookup(cap)  # must be registered before install
         if ctx.capability_registry is None:
             return (False, {}, [Evidence(step=step.action, label="installed", detail="no capability registry available", success=False)])
         cap_obj = ctx.capability_registry.get(ctx.identity_id, cap)
         already_installed = cap_obj is not None
         if cap_obj is None:
+            import importlib
+            from core.capabilities.registry import lookup
+            importlib.import_module(f"core.capabilities.{cap}")  # fires @register
+            lookup(cap)
             cap_obj = ctx.capability_registry.install(ctx.identity_id, cap)
         evidence = [Evidence(
             step=step.action, label="installed",
