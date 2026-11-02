@@ -10,7 +10,8 @@ IdentityOS distinguishes two timeout contracts:
 A synchronous SDK call cannot be safely interrupted by raising an exception in
 its Python thread. Budgeted calls therefore run in a daemon worker while the
 calling thread waits on a monotonic deadline. On expiry, the caller immediately
-receives `TimeoutError`, and adapter cleanup detaches and closes the active
+receives `GenerationDeadlineError` (both a `TimeoutError` and the historical
+adapter-facing `RuntimeError`), and cleanup detaches and closes the active
 client asynchronously. The worker may exist briefly while that transport close
 unblocks it; because it is a daemon, it cannot hold process shutdown open.
 

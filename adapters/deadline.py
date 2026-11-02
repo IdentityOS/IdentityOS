@@ -15,6 +15,14 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 
+class GenerationDeadlineError(TimeoutError, RuntimeError):
+    """A total-generation timeout compatible with existing adapter contracts.
+
+    ``TimeoutError`` lets direct callers distinguish a wall-clock expiry, while
+    ``RuntimeError`` preserves the historical adapter/chain failure contract.
+    """
+
+
 def run_with_wall_clock_deadline(
     operation: Callable[[], Any],
     budget: float,
@@ -57,7 +65,7 @@ def run_with_wall_clock_deadline(
                 daemon=True,
                 name="identityos-generation-abort",
             ).start()
-        raise TimeoutError(
+        raise GenerationDeadlineError(
             f"generation deadline reached after {seconds:g}s"
         ) from exc
 
@@ -72,4 +80,4 @@ def run_with_wall_clock_deadline(
 def require_time_remaining(deadline: Optional[float]) -> None:
     """Reject late work before it can cross into a tool side-effect boundary."""
     if deadline is not None and time.monotonic() >= deadline:
-        raise TimeoutError("generation deadline reached")
+        raise GenerationDeadlineError("generation deadline reached")
