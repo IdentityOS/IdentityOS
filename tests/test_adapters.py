@@ -128,7 +128,7 @@ class TestOpenAIAdapter:
         # A fresh interpreter verifies the actual installed SDK and socket timeout.
         import subprocess
         subprocess.run([sys.executable, "-c", '''
-import socket, threading, time
+import os, socket, threading, time
 from openai import APITimeoutError, Timeout
 from adapters.openai_adapter import OpenAIAdapter
 server = socket.socket()
@@ -170,37 +170,61 @@ finally:
         # adapter's caller-visible deadline, not merely the transport phase.
         import subprocess
         subprocess.run([sys.executable, "-c", r'''
-import socket, threading, time
+import os, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from adapters.openai_adapter import OpenAIAdapter
 
-server = socket.socket()
-server.bind(('127.0.0.1', 0))
-server.listen()
 received = threading.Event()
 release = threading.Event()
+request_count = 0
+request_lock = threading.Lock()
 
-def trickle():
-    conn, _ = server.accept()
-    with conn:
-        conn.recv(65536)
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        global request_count
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        with request_lock:
+            request_index = request_count
+            request_count += 1
+        if request_index == 0:
+            payload = (
+                b'{"id":"chatcmpl-warm","object":"chat.completion",'
+                b'"created":0,"model":"test","choices":[{"index":0,'
+                b'"message":{"role":"assistant","content":"warm"},'
+                b'"finish_reason":"stop"}]}'
+            )
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         received.set()
-        conn.sendall(
-            b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
-            b'Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n'
-        )
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.end_headers()
         while not release.is_set():
             try:
-                conn.sendall(b'1\r\n \r\n')
+                self.wfile.write(b'1\r\n \r\n')
+                self.wfile.flush()
             except OSError:
                 break
             time.sleep(.03)
 
-threading.Thread(target=trickle, daemon=True).start()
+server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+server.daemon_threads = True
+threading.Thread(target=server.serve_forever, daemon=True).start()
 adapter = OpenAIAdapter(
     api_key='test-local', timeout=5,
-    base_url=f'http://127.0.0.1:{server.getsockname()[1]}/v1',
+    base_url=f'http://127.0.0.1:{server.server_address[1]}/v1',
 )
-adapter._get_client()  # isolate the trickled response from cold SDK import noise
+assert adapter.generate('system', 'warm up', None) == 'warm'
 started = time.monotonic()
 try:
     adapter.generate('system', 'hello', None, _generation_budget=.3)
@@ -213,8 +237,10 @@ else:
     raise AssertionError('trickling response exceeded the wall-clock budget')
 finally:
     release.set()
-    server.close()
-'''], check=True, timeout=10)
+    server.shutdown()
+    server.server_close()
+os._exit(0)  # daemonized timed-out transport must not hold test process shutdown
+'''], check=True, timeout=20)
 
     def test_timeout_defaults_from_environment(self, monkeypatch):
         monkeypatch.setenv("OPENAI_TIMEOUT", "19.25")
