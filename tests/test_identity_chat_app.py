@@ -10,8 +10,8 @@ import pytest
 
 @pytest.fixture()
 def chat_app(tmp_path, monkeypatch):
+    monkeypatch.setenv("IDENTITYOS_HOME", str(tmp_path / "identityos-home"))
     module = importlib.import_module("runtime.playground.app")
-    monkeypatch.setenv("IDENTITY_STORE_PATH", str(tmp_path))
     previous = module.manager
     module.manager = module.RuntimeManager()
     try:

@@ -1,0 +1,7 @@
+{
+  "blocked_reason": "No portability command was supplied for this run.",
+  "duration_ms": null,
+  "sanitized_output_sha256": null,
+  "schema_version": "identityos.onboarding.portability.v1",
+  "verified": false
+}

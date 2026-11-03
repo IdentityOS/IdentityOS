@@ -1,0 +1,9 @@
+{
+  "filename": "identityos-2.1.0-py3-none-any.whl",
+  "publication_status": "unpublished",
+  "schema_version": "identityos.onboarding.artifact.v1",
+  "sha256": "fa6c2d2e41c1ad822b5877d26a64104a57ff8aa1e17458a3aaa18ba10da02c14",
+  "size_bytes": 890557,
+  "source": "final-clean-container-build",
+  "unpublished_artifact_test": true
+}

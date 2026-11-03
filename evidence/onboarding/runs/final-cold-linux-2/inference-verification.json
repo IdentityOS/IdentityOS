@@ -1,0 +1,7 @@
+{
+  "blocked_reason": "No inference command was supplied for this run.",
+  "mode": "none",
+  "real_inference_acceptance": false,
+  "schema_version": "identityos.onboarding.inference.v1",
+  "verified": false
+}

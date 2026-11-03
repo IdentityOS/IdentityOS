@@ -1,0 +1,24 @@
+{
+  "schema_version": "identityos.installer.evidence.v1",
+  "run_id": "final-public-facing-installer",
+  "started_at": "2026-11-03T22:45:05Z",
+  "finished_at": "2026-11-03T22:46:50Z",
+  "base_image": "python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016",
+  "artifact": "identityos-2.1.0-py3-none-any.whl",
+  "artifact_sha256": "fa6c2d2e41c1ad822b5877d26a64104a57ff8aa1e17458a3aaa18ba10da02c14",
+  "publication_status": "unpublished",
+  "documented_command_shape": "bash install.sh --artifact /absolute/path/to/wheel",
+  "manual_clone_required": false,
+  "installation_ms": 90031,
+  "initialization_ms": 1503,
+  "total_through_dashboard_shutdown_ms": 105109,
+  "doctor_succeeded": true,
+  "dashboard_delayed_status_succeeded": true,
+  "dashboard_http_request_succeeded": true,
+  "dashboard_shutdown_succeeded": true,
+  "notes": [
+    "The container started without an IdentityOS installation or IdentityOS state.",
+    "The repository was not cloned; only install.sh and the unpublished wheel were mounted read-only.",
+    "The dashboard bound to 127.0.0.1 and served the real onboarding page after a three-second delayed status check."
+  ]
+}

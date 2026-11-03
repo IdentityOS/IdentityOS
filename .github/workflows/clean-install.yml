@@ -1,0 +1,88 @@
+name: Clean install artifact verification
+
+on:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "identityos/**"
+      - "core/**"
+      - "runtime/**"
+      - "adapters/**"
+      - "identity_graph/**"
+      - "cli/**"
+      - "scripts/verify_clean_install.py"
+      - "scripts/verify_adoption_journey.py"
+      - "install.sh"
+      - "tests/test_adoption_core.py"
+      - "tests/test_clean_install_harness.py"
+      - "tests/test_idos_cli.py"
+      - "tests/test_installer.py"
+      - "tests/test_onboarding_app.py"
+      - ".github/workflows/clean-install.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel-clean-venv:
+    name: Wheel smoke (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build wheel
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir build
+          python -m build --wheel
+
+      - name: Verify wheel in a fresh environment
+        env:
+          EVIDENCE_ROOT: evidence/onboarding/ci-python-${{ matrix.python-version }}
+          RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-py${{ matrix.python-version }}
+        run: |
+          wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python scripts/verify_clean_install.py \
+            --wheel "$wheel" \
+            --evidence-root "$EVIDENCE_ROOT" \
+            --run-id "$RUN_ID" \
+            --publication-status unpublished \
+            --artifact-source github-actions-local-build \
+            --network-state online \
+            --reinstall-check \
+            --smoke-command "{python} -c 'import identityos; print(identityos.__file__)'" \
+            --smoke-command "idos --help" \
+            --smoke-command "identity --help" \
+            --onboarding-command "idos init --json" \
+            --inference-mode none
+
+      - name: Test the evidence harness
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir dist/*.whl pytest
+          python -m pytest \
+            tests/test_adoption_core.py \
+            tests/test_clean_install_harness.py \
+            tests/test_idos_cli.py \
+            tests/test_installer.py \
+            tests/test_onboarding_app.py \
+            -q
+
+      - name: Upload sanitized verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-install-python-${{ matrix.python-version }}
+          path: evidence/onboarding/ci-python-${{ matrix.python-version }}/
+          if-no-files-found: warn
+          retention-days: 14

@@ -15,9 +15,11 @@ Or create a new identity:
     mentor.chat("What is your purpose?")
 """
 
-from identityos.identity import Identity, IdentityObject
 from identityos.client import IdentityClient
 from identityos.diagnostics import IdentityDiagnostics, IdentityHealthEvidence
+from identityos.identity import Identity, IdentityObject
+
+__version__ = "2.1.0"
 
 __all__ = [
     "Identity",
@@ -25,4 +27,5 @@ __all__ = [
     "IdentityClient",
     "IdentityDiagnostics",
     "IdentityHealthEvidence",
+    "__version__",
 ]

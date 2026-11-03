@@ -1,0 +1,19 @@
+{
+  "architecture": "x86_64",
+  "base_image": "python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016",
+  "captured_at": "2026-11-03T22:32:24.056Z",
+  "cpu_count": 4,
+  "credential_environment_names": [],
+  "credential_values_recorded": false,
+  "disk_free_bytes": 30289268736,
+  "host_python": "3.12.15",
+  "isolation": "fresh-venv",
+  "memory_bytes": 8260648960,
+  "network_state": "online",
+  "os": "Linux",
+  "pip_cache": "disabled",
+  "platform": "Linux-7.0.0-42-generic-x86_64-with-glibc2.41",
+  "run_id": "final-cold-linux-2",
+  "schema_version": "identityos.onboarding.environment.v1",
+  "venv_python_source": "/usr/local/bin/python3.12"
+}

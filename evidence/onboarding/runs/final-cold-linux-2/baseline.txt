@@ -1,0 +1,6 @@
+run_id=final-cold-linux-2
+isolation=fresh-venv
+repository_import_path_removed=true
+pip_cache=disabled
+publication_status=unpublished
+preexisting_identityos=false (fresh venv invariant)
