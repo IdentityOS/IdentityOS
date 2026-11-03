@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -119,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token", default="", help="GitHub token")
     parser.add_argument("--test-results", default="", help="Path to test results file for AI interpretation")
     parser.add_argument("--benchmark-results", default="", help="Path to benchmark results file for AI interpretation")
+    parser.add_argument("--expected-files", type=int, help="Authoritative changed-file count from GitHub")
+    parser.add_argument("--expected-additions", type=int, help="Authoritative addition count from GitHub")
+    parser.add_argument("--expected-deletions", type=int, help="Authoritative deletion count from GitHub")
+    parser.add_argument("--base-sha", default="", help="Exact pull request base commit")
+    parser.add_argument("--head-sha", default="", help="Exact pull request head commit")
     return parser.parse_args()
 
 
@@ -136,7 +142,14 @@ def parse_diff_files(diff: str) -> List[Dict[str, Any]]:
         elif line.startswith("diff --git"):
             if current_file:
                 files.append(current_file)
-            current_file = {"path": "", "additions": 0, "deletions": 0, "lines": []}
+            path = ""
+            try:
+                tokens = shlex.split(line)
+                if len(tokens) >= 4 and tokens[3].startswith("b/"):
+                    path = tokens[3][2:]
+            except ValueError:
+                pass
+            current_file = {"path": path, "additions": 0, "deletions": 0, "lines": []}
         elif current_file:
             if line.startswith("+") and not line.startswith("+++"):
                 current_file["additions"] += 1
@@ -146,6 +159,70 @@ def parse_diff_files(diff: str) -> List[Dict[str, Any]]:
     if current_file:
         files.append(current_file)
     return files
+
+
+def build_diff_evidence(
+    files: List[Dict[str, Any]],
+    *,
+    expected_files: Optional[int],
+    expected_additions: Optional[int],
+    expected_deletions: Optional[int],
+    base_sha: str = "",
+    head_sha: str = "",
+) -> Dict[str, Any]:
+    """Compare parsed diff facts with GitHub's independent PR metadata."""
+    observed = {
+        "files": len(files),
+        "additions": sum(item.get("additions", 0) for item in files),
+        "deletions": sum(item.get("deletions", 0) for item in files),
+    }
+    expected = {
+        "files": expected_files,
+        "additions": expected_additions,
+        "deletions": expected_deletions,
+    }
+    missing = [name for name, value in expected.items() if value is None]
+    if not base_sha:
+        missing.append("base_sha")
+    if not head_sha:
+        missing.append("head_sha")
+    mismatches = [
+        {
+            "metric": name,
+            "expected": expected[name],
+            "observed": observed[name],
+        }
+        for name in expected
+        if expected[name] is not None and expected[name] != observed[name]
+    ]
+    return {
+        "verified": not missing and not mismatches,
+        "observed": observed,
+        "expected": expected,
+        "missing": missing,
+        "mismatches": mismatches,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "paths": [item.get("path", "") for item in files],
+    }
+
+
+def diff_evidence_failure_reasons(evidence: Dict[str, Any]) -> List[str]:
+    reasons: List[str] = []
+    if evidence.get("missing"):
+        missing = ", ".join(evidence["missing"])
+        reasons.append(
+            "- **Review input could not be verified.** Missing authoritative metadata: "
+            f"`{missing}`. Required action: rerun the review with GitHub PR totals and exact base/head SHAs."
+        )
+    for mismatch in evidence.get("mismatches", []):
+        reasons.append(
+            "- **Diff integrity mismatch.** GitHub reports "
+            f"`{mismatch['expected']}` {mismatch['metric']}, but the downloaded diff parsed as "
+            f"`{mismatch['observed']}`. Required action: redownload the diff for the exact PR base/head "
+            "and rerun Daedalus. No code-quality conclusion is made from this inconsistent input."
+        )
+    return reasons
 
 
 def detect_layer(fpath: str) -> Optional[str]:
@@ -195,13 +272,18 @@ def analyze_test_coverage(files: List[Dict[str, Any]]) -> List[str]:
     ]
     test_files = [f for f in files if f["path"].startswith("tests/")]
     if source_files and not test_files:
+        changed = ", ".join(f"`{item['path']}`" for item in source_files[:5])
+        if len(source_files) > 5:
+            changed += f", and {len(source_files) - 5} more"
         findings.append(
-            f"- \u26a0\ufe0f **{len(source_files)} source files changed but no test files updated** \u2014 "
-            "consider adding tests for the changes"
+            f"- \u2139\ufe0f **{len(source_files)} source files changed but no test files updated** \u2014 "
+            f"evidence: {changed}. This is not a blocker by itself. Verify that existing tests exercise "
+            "the changed behavior, or add focused tests when coverage is missing."
         )
     elif source_files:
         findings.append(
-            f"- \u2705 **{len(test_files)} test file(s)** included for **{len(source_files)} source file(s)** changed"
+            f"- \u2139\ufe0f **{len(test_files)} test file(s)** changed alongside **{len(source_files)} source "
+            "file(s)**. This is file-level evidence only; passing checks are reported separately."
         )
     for sf in source_files:
         if not _source_has_test_evidence(sf["path"], test_files):
@@ -404,21 +486,109 @@ def assess_readiness(findings: Dict[str, List[str]]) -> Tuple[str, List[str]]:
         return "READY", []
 
 
+def assess_check_evidence(check_evidence: str) -> Tuple[str, List[str]]:
+    """Turn observed failing check conclusions into deterministic blockers."""
+    failure_states = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
+    blockers: List[str] = []
+    for line in check_evidence.splitlines():
+        name, separator, conclusion = line.rpartition(":")
+        if not separator or conclusion.strip().lower() not in failure_states:
+            continue
+        blockers.append(
+            f"- \u274c **Check `{name.strip()}` reported `{conclusion.strip()}`.** "
+            "This is observed GitHub check evidence. Required change: inspect and correct the failing "
+            "job or implementation, then rerun it to a successful conclusion."
+        )
+    return ("NOT_READY", blockers) if blockers else ("READY", [])
+
+
 def reconcile_readiness(
     static_readiness: Tuple[str, List[str]],
-    ai_verdict: Optional[str],
+    ai_analysis: Optional[Dict[str, Any]],
+    *,
+    changed_paths: Optional[List[str]] = None,
+    check_evidence: str = "",
 ) -> Tuple[str, List[str]]:
-    """Use the stricter valid verdict so the label and review cannot disagree."""
+    """Accept AI downgrades only when each blocker is tied to supplied evidence."""
     severity = {"READY": 0, "NEEDS_WORK": 1, "NOT_READY": 2}
+    ai_verdict = ai_analysis.get("verdict") if isinstance(ai_analysis, dict) else None
     if ai_verdict not in severity:
         return static_readiness
     static_status, reasons = static_readiness
     if severity[ai_verdict] <= severity.get(static_status, 0):
         return static_readiness
-    return ai_verdict, reasons + [
-        f"- Daedalus AI verdict is **{ai_verdict.replace('_', ' ')}**; "
-        "see the evidence-backed recommendations in the AI analysis below."
-    ]
+    blockers = validate_ai_blockers(
+        ai_analysis.get("blockers", []),
+        changed_paths=changed_paths or [],
+        check_evidence=check_evidence,
+    )
+    if not blockers:
+        return static_readiness
+    rendered = reasons + [render_blocker(blocker) for blocker in blockers]
+    strongest = "NOT_READY" if any(item["severity"] == "blocking" for item in blockers) else "NEEDS_WORK"
+    return strongest, rendered
+
+
+def validate_ai_blockers(
+    blockers: Any,
+    *,
+    changed_paths: List[str],
+    check_evidence: str,
+) -> List[Dict[str, str]]:
+    """Reject vague or ungrounded model blockers before they affect readiness."""
+    required = {
+        "title",
+        "severity",
+        "evidence_source",
+        "evidence_location",
+        "evidence",
+        "impact",
+        "required_change",
+        "verification",
+    }
+    valid: List[Dict[str, str]] = []
+    for candidate in blockers if isinstance(blockers, list) else []:
+        if not isinstance(candidate, dict) or not required.issubset(candidate):
+            continue
+        normalized = {key: str(candidate.get(key, "")).strip() for key in required}
+        if not all(normalized.values()) or normalized["severity"] not in {"blocking", "warning"}:
+            continue
+        source = normalized["evidence_source"]
+        location = normalized["evidence_location"]
+        if source == "diff":
+            if not any(location == path or location.startswith(f"{path}:") for path in changed_paths):
+                continue
+        elif source == "check":
+            if not _check_reports_failure(location, check_evidence):
+                continue
+        else:
+            continue
+        valid.append(normalized)
+    return valid
+
+
+def _check_reports_failure(check_name: str, check_evidence: str) -> bool:
+    failure_states = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
+    for line in check_evidence.splitlines():
+        name, separator, conclusion = line.rpartition(":")
+        if separator and name.strip().lower() == check_name.lower():
+            return conclusion.strip().lower() in failure_states
+    return False
+
+
+def render_blocker(blocker: Dict[str, str]) -> str:
+    evidence_label = (
+        "Observed check evidence"
+        if blocker["evidence_source"] == "check"
+        else "Model-derived finding at a runtime-verified changed path"
+    )
+    return (
+        f"- **{blocker['title']}**\n"
+        f"  - {evidence_label}: `{blocker['evidence_location']}` \u2014 {blocker['evidence']}\n"
+        f"  - Why it matters: {blocker['impact']}\n"
+        f"  - Required change: {blocker['required_change']}\n"
+        f"  - How to verify: {blocker['verification']}"
+    )
 
 
 def generate_markdown_review(
@@ -429,9 +599,16 @@ def generate_markdown_review(
     findings: Dict[str, List[str]],
     readiness: Tuple[str, List[str]],
     daedalus_config: Dict[str, Any],
+    evidence: Optional[Dict[str, Any]] = None,
+    check_evidence: str = "",
 ) -> str:
     status = readiness[0]
-    status_emoji = {"READY": "\u2705", "NEEDS_WORK": "\u26a0\ufe0f", "NOT_READY": "\u274c"}
+    status_emoji = {
+        "READY": "\u2705",
+        "NEEDS_WORK": "\u26a0\ufe0f",
+        "NOT_READY": "\u274c",
+        "INCONCLUSIVE": "\u2753",
+    }
     identity = daedalus_config.get("identity", {})
     personality = identity.get("personality", {})
     style = personality.get("style", "evidence-driven")
@@ -445,8 +622,16 @@ def generate_markdown_review(
         f"## Merge Readiness: {status_emoji.get(status, chr(10067))} {status.replace('_', ' ')}",
         "",
     ]
+    decision_text = {
+        "READY": "No evidence-backed merge blocker was found. Required repository checks and reviews still apply.",
+        "NEEDS_WORK": "Not ready to merge until the evidence-backed items below are resolved.",
+        "NOT_READY": "Do not merge until the blocking evidence below is resolved and re-verified.",
+        "INCONCLUSIVE": "Daedalus could not safely determine readiness because its review input was not verified. This is an automation failure, not a claim that the PR code is defective.",
+    }
+    lines.append(decision_text.get(status, "Readiness could not be determined."))
+    lines.append("")
     if readiness[1]:
-        lines.append("### Issues & Recommendations")
+        lines.append("### What prevents merge")
         lines.append("")
         for item in readiness[1][:12]:
             lines.append(item)
@@ -469,8 +654,28 @@ def generate_markdown_review(
             lines.extend(items)
             lines.append("")
 
+    if evidence:
+        observed = evidence.get("observed", {})
+        expected = evidence.get("expected", {})
+        lines.extend([
+            "## Verified Review Inputs",
+            "",
+            f"- Diff integrity: **{'verified' if evidence.get('verified') else 'not verified'}**",
+            f"- Parsed diff: **{observed.get('files', 0)} files, +{observed.get('additions', 0)} / -{observed.get('deletions', 0)}**",
+            f"- GitHub metadata: **{expected.get('files', 'unknown')} files, +{expected.get('additions', 'unknown')} / -{expected.get('deletions', 'unknown')}**",
+            f"- Exact revision: `{evidence.get('base_sha') or 'unknown'}` → `{evidence.get('head_sha') or 'unknown'}`",
+            "- Changed files: " + (", ".join(f"`{path}`" for path in evidence.get("paths", [])[:30]) or "none"),
+            "",
+            "### Independent check evidence",
+            "",
+            "```text",
+            check_evidence.strip() or "No independent check results were supplied to Daedalus.",
+            "```",
+            "",
+        ])
+
     lines.extend([
-        "## Evidence & Methodology",
+        "## Methodology",
         "",
         "Daedalus reviewed this PR by:",
         f"- Analyzing the diff against {len(ARCHITECTURE_LAYERS)} architectural layers",
@@ -523,7 +728,8 @@ def create_proactive_issue(args: argparse.Namespace, findings: Dict[str, List[st
     if any("Source code changed without documentation" in r for r in findings.get("documentation", [])):
         issues.append("Documentation gap: source changed without docs update")
     for finding in findings.get("tech_debt", []):
-        issues.append(finding.strip("- "))
+        if "marker" in finding.lower() and "no new" not in finding.lower():
+            issues.append(finding.strip("- "))
     for finding in findings.get("separation", []):
         if "violation" in finding.lower():
             issues.append(finding.strip("- "))
@@ -558,9 +764,10 @@ def generate_llm_review_section(
     args: argparse.Namespace,
     findings: Dict[str, List[str]],
     readiness: Tuple[str, List[str]],
-) -> Tuple[str, Optional[str]]:
+    evidence: Dict[str, Any],
+) -> Tuple[str, Optional[Dict[str, Any]]]:
     try:
-        from core.capabilities.daedalus.thinking_engine import ThinkingEngine, load_memory, record_pr_review, record_recommendation, summarize_recommendation_follow_through
+        from core.capabilities.daedalus.thinking_engine import ThinkingEngine, record_recommendation, summarize_recommendation_follow_through
     except ImportError:
         return "", None
 
@@ -583,6 +790,15 @@ def generate_llm_review_section(
 
     user_prompt = f"""## PR: {args.title} (#{args.pr_number})
 **Branch:** {args.head_ref} -> {args.base_ref}
+
+### Authoritative Review Scope
+- Base SHA: {evidence.get('base_sha')}
+- Head SHA: {evidence.get('head_sha')}
+- Files: {evidence.get('observed', {}).get('files')}
+- Additions: {evidence.get('observed', {}).get('additions')}
+- Deletions: {evidence.get('observed', {}).get('deletions')}
+- Changed paths: {json.dumps(evidence.get('paths', []))}
+- Paths with patch content in the model preview: {json.dumps(evidence.get('model_diff_paths', []))}
 
 ### Static Analysis Results
 
@@ -624,30 +840,25 @@ Analyze this PR and respond in the specified JSON format."""
         temperature=0.3,
     )
 
-    ai_verdict: Optional[str] = None
+    ai_analysis: Optional[Dict[str, Any]] = None
 
     if thought.content and thought.finish_reason != "error":
         try:
             parsed = json.loads(thought.content)
             candidate = parsed.get("verdict")
             if candidate in {"READY", "NEEDS_WORK", "NOT_READY"}:
-                ai_verdict = candidate
+                ai_analysis = parsed
             recs = parsed.get("recommendations", [])
             for r in recs[:3]:
+                recommendation = r if isinstance(r, str) else str(r)
                 record_recommendation(
-                    recommendation=r if isinstance(r, str) else str(r),
+                    recommendation=recommendation,
                     context=f"PR #{args.pr_number}: {args.title}",
                     pr_number=args.pr_number,
-                    severity="warning" if "must" in r.lower() or "critical" in r.lower() else "info",
+                    severity="warning" if "must" in recommendation.lower() or "critical" in recommendation.lower() else "info",
                 )
         except (json.JSONDecodeError, Exception):
             pass
-
-        record_pr_review(
-            args.pr_number,
-            ai_verdict or readiness[0],
-            thought.content[:200],
-        )
 
         lines = [
             "",
@@ -656,17 +867,24 @@ Analyze this PR and respond in the specified JSON format."""
             f"({thought.provider}/{thought.model})",
             "",
         ]
-        lines.append(thought.content)
+        if ai_analysis:
+            lines.append("**Model interpretation (not execution evidence):** " + str(
+                ai_analysis.get("summary", "No summary supplied.")
+            ))
+            recommendations = ai_analysis.get("recommendations", [])
+            if recommendations:
+                lines.extend(["", "### Advisory model suggestions (not merge blockers)", ""])
+                lines.extend(f"- {item}" for item in recommendations[:5])
+        else:
+            lines.append("Model analysis was not used because it did not return valid structured JSON.")
         lines.append("")
-        return "\n".join(lines), ai_verdict
+        return "\n".join(lines), ai_analysis
     elif thought.content:
-        record_pr_review(args.pr_number, readiness[0], thought.content[:200])
         return (
             f"\n\n## Daedalus AI Analysis\n\n"
             f"Analysis unavailable: {thought.content[:200]}\n",
             None,
         )
-    record_pr_review(args.pr_number, readiness[0], "No LLM analysis")
     return "", None
 
 
@@ -675,6 +893,21 @@ def main() -> None:
     daedalus_config = load_daedalus_config()
     diff_text = read_diff(args.diff)
     files = parse_diff_files(diff_text)
+    evidence = build_diff_evidence(
+        files,
+        expected_files=args.expected_files,
+        expected_additions=args.expected_additions,
+        expected_deletions=args.expected_deletions,
+        base_sha=args.base_sha,
+        head_sha=args.head_sha,
+    )
+    diff_preview = "\n".join(diff_text.splitlines()[:100])
+    evidence["model_diff_paths"] = [
+        item["path"] for item in parse_diff_files(diff_preview) if item.get("path")
+    ]
+    check_evidence = ""
+    if args.test_results and os.path.exists(args.test_results):
+        check_evidence = Path(args.test_results).read_text()[:4000]
     findings: Dict[str, List[str]] = {
         "separation": [],
         "architecture": [],
@@ -684,23 +917,50 @@ def main() -> None:
         "goals": [],
         "tech_debt": [],
     }
-    findings["separation"] = analyze_separation(files, diff_text)
-    findings["architecture"] = analyze_architectural_impact(files)
-    findings["diff_quality"] = analyze_diff_quality(files, args.title)
-    findings["test_coverage"] = analyze_test_coverage(files)
-    findings["documentation"] = analyze_documentation_impact(files)
-    findings["goals"] = analyze_goals_alignment(files, args.title, daedalus_config)
-    findings["tech_debt"] = analyze_technical_debt_introduced(files)
-    readiness = assess_readiness(findings)
-    llm_section, ai_verdict = generate_llm_review_section(
-        args,
-        findings,
-        readiness,
-    )
-    readiness = reconcile_readiness(readiness, ai_verdict)
+    llm_section = ""
+    if evidence["verified"]:
+        findings["separation"] = analyze_separation(files, diff_text)
+        findings["architecture"] = analyze_architectural_impact(files)
+        findings["diff_quality"] = analyze_diff_quality(files, args.title)
+        findings["test_coverage"] = analyze_test_coverage(files)
+        findings["documentation"] = analyze_documentation_impact(files)
+        findings["goals"] = analyze_goals_alignment(files, args.title, daedalus_config)
+        findings["tech_debt"] = analyze_technical_debt_introduced(files)
+        readiness = assess_readiness(findings)
+        check_readiness = assess_check_evidence(check_evidence)
+        if check_readiness[0] == "NOT_READY":
+            readiness = (
+                "NOT_READY",
+                readiness[1] + check_readiness[1],
+            )
+        llm_section, ai_analysis = generate_llm_review_section(
+            args,
+            findings,
+            readiness,
+            evidence,
+        )
+        readiness = reconcile_readiness(
+            readiness,
+            ai_analysis,
+            changed_paths=evidence["model_diff_paths"],
+            check_evidence=check_evidence,
+        )
+    else:
+        readiness = ("INCONCLUSIVE", diff_evidence_failure_reasons(evidence))
+    try:
+        from core.capabilities.daedalus.thinking_engine import record_pr_review
+        record_pr_review(
+            args.pr_number,
+            readiness[0],
+            "Runtime-validated final verdict based on verified diff/check evidence."
+            if evidence["verified"]
+            else "Review input integrity failed; no code-quality verdict was recorded.",
+        )
+    except ImportError:
+        pass
     markdown = generate_markdown_review(
         args.title, args.pr_number, args.head_ref, args.base_ref,
-        findings, readiness, daedalus_config,
+        findings, readiness, daedalus_config, evidence, check_evidence,
     )
     if llm_section:
         markdown += llm_section
@@ -713,14 +973,8 @@ def main() -> None:
             f.write(f"status={status}\n")
     print(f"Daedalus review written to {args.output} - status: {status}")
 
-    doc_result = generate_documentation(findings, args)
-    if doc_result:
-        print(f"Daedalus proactive: {doc_result.strip()}")
-        markdown += doc_result
-        with open(args.output, "w") as f:
-            f.write(markdown)
-
-    create_proactive_issue(args, findings)
+    if evidence["verified"]:
+        create_proactive_issue(args, findings)
 
 if __name__ == "__main__":
     main()

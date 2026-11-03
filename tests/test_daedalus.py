@@ -6,12 +6,15 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import scripts.daedalus_review as daedalus_review_module
 
 from core.capabilities.daedalus import (
     _technical_debt_marker as capability_debt_marker,
 )
 from scripts.daedalus_review import (
     parse_diff_files,
+    build_diff_evidence,
+    diff_evidence_failure_reasons,
     analyze_separation,
     analyze_test_coverage,
     analyze_diff_quality,
@@ -20,6 +23,9 @@ from scripts.daedalus_review import (
     analyze_technical_debt_introduced,
     analyze_goals_alignment,
     assess_readiness,
+    assess_check_evidence,
+    reconcile_readiness,
+    generate_markdown_review,
     ARCHITECTURE_LAYERS,
     CATEGORY_MAP,
 )
@@ -68,6 +74,54 @@ diff --git a/b.py b/b.py
         files = parse_diff_files(diff)
         assert len(files) == 1
         assert files[0]["additions"] == 0
+
+    def test_deleted_file_keeps_its_path(self):
+        diff = """diff --git a/old.py b/old.py
+deleted file mode 100644
+--- a/old.py
++++ /dev/null
+@@ -1 +0,0 @@
+-old line"""
+
+        files = parse_diff_files(diff)
+
+        assert files[0]["path"] == "old.py"
+        assert files[0]["deletions"] == 1
+
+
+class TestDiffEvidence:
+    def test_matching_github_metadata_is_verified(self):
+        files = [{"path": "docs/a.md", "additions": 60, "deletions": 0}]
+
+        evidence = build_diff_evidence(
+            files,
+            expected_files=1,
+            expected_additions=60,
+            expected_deletions=0,
+            base_sha="base123",
+            head_sha="head456",
+        )
+
+        assert evidence["verified"] is True
+        assert evidence["paths"] == ["docs/a.md"]
+
+    def test_mismatched_diff_fails_closed_with_exact_reason(self):
+        files = [{"path": "docs/a.md", "additions": 965, "deletions": 59842}]
+
+        evidence = build_diff_evidence(
+            files,
+            expected_files=1,
+            expected_additions=60,
+            expected_deletions=0,
+            base_sha="base123",
+            head_sha="head456",
+        )
+        reasons = diff_evidence_failure_reasons(evidence)
+
+        assert evidence["verified"] is False
+        assert any("GitHub reports `60` additions" in item for item in reasons)
+        assert any("parsed as `59842`" in item for item in reasons)
+        assert all("No code-quality conclusion" in item for item in reasons)
 
 
 # ── Layer Separation ─────────────────────────────────────────────────
@@ -346,6 +400,204 @@ class TestReadiness:
     def test_not_ready(self):
         result = assess_readiness({"separation": ["❌ blocker"]})
         assert result[0] == "NOT_READY"
+
+    def test_missing_changed_test_file_is_advisory_not_a_blocker(self):
+        findings = analyze_test_coverage([
+            {"path": "core/foo.py", "lines": ["+def changed(): pass"]},
+        ])
+
+        assert assess_readiness({"test_coverage": findings})[0] == "READY"
+
+    def test_vague_ai_downgrade_cannot_change_readiness(self):
+        result = reconcile_readiness(
+            ("READY", []),
+            {"verdict": "NEEDS_WORK", "recommendations": ["Add more tests"]},
+            changed_paths=["core/foo.py"],
+        )
+
+        assert result == ("READY", [])
+
+    def test_ai_blocker_requires_a_real_changed_path(self):
+        blocker = {
+            "title": "Wrong file claim",
+            "severity": "blocking",
+            "evidence_source": "diff",
+            "evidence_location": "runtime/not_changed.py:12",
+            "evidence": "A branch appears unsafe.",
+            "impact": "It could fail.",
+            "required_change": "Fix it.",
+            "verification": "Run its test.",
+        }
+
+        result = reconcile_readiness(
+            ("READY", []),
+            {"verdict": "NOT_READY", "blockers": [blocker]},
+            changed_paths=["core/foo.py"],
+        )
+
+        assert result == ("READY", [])
+
+    def test_grounded_ai_blocker_explains_remediation_and_verification(self):
+        blocker = {
+            "title": "Unchecked failure path",
+            "severity": "blocking",
+            "evidence_source": "diff",
+            "evidence_location": "core/foo.py:12",
+            "evidence": "The new error branch returns success.",
+            "impact": "Callers cannot distinguish failure from success.",
+            "required_change": "Return the structured failure result.",
+            "verification": "Add and pass a regression test for the error branch.",
+        }
+
+        result = reconcile_readiness(
+            ("READY", []),
+            {"verdict": "NOT_READY", "blockers": [blocker]},
+            changed_paths=["core/foo.py"],
+        )
+
+        assert result[0] == "NOT_READY"
+        assert "Model-derived finding at a runtime-verified changed path: `core/foo.py:12`" in result[1][0]
+        assert "Required change: Return the structured failure result." in result[1][0]
+        assert "How to verify: Add and pass a regression test" in result[1][0]
+
+    @pytest.mark.parametrize("conclusion", ["success", "queued", "in_progress"])
+    def test_nonfailing_check_cannot_be_used_as_a_blocker(self, conclusion):
+        blocker = {
+            "title": "Tests failed",
+            "severity": "blocking",
+            "evidence_source": "check",
+            "evidence_location": "unit-tests",
+            "evidence": "The test job failed.",
+            "impact": "A regression may exist.",
+            "required_change": "Fix the regression.",
+            "verification": "Rerun unit-tests.",
+        }
+
+        result = reconcile_readiness(
+            ("READY", []),
+            {"verdict": "NOT_READY", "blockers": [blocker]},
+            check_evidence=f"unit-tests: {conclusion}",
+        )
+
+        assert result == ("READY", [])
+
+    def test_observed_failed_check_can_block(self):
+        blocker = {
+            "title": "Tests failed",
+            "severity": "blocking",
+            "evidence_source": "check",
+            "evidence_location": "unit-tests",
+            "evidence": "The supplied check result is failure.",
+            "impact": "The change has not passed its regression suite.",
+            "required_change": "Fix the failing test or implementation.",
+            "verification": "Rerun unit-tests and observe success.",
+        }
+
+        result = reconcile_readiness(
+            ("READY", []),
+            {"verdict": "NOT_READY", "blockers": [blocker]},
+            check_evidence="unit-tests: failure",
+        )
+
+        assert result[0] == "NOT_READY"
+
+    @pytest.mark.parametrize(
+        "state",
+        ["failure", "cancelled", "timed_out", "action_required", "startup_failure"],
+    )
+    def test_observed_failed_check_blocks_without_model_help(self, state):
+        readiness = assess_check_evidence(f"unit-tests: {state}")
+
+        assert readiness[0] == "NOT_READY"
+        assert f"reported `{state}`" in readiness[1][0]
+        assert "This is observed GitHub check evidence" in readiness[1][0]
+
+    @pytest.mark.parametrize("state", ["success", "neutral", "skipped", "queued", "in_progress"])
+    def test_nonfailing_check_does_not_create_a_false_blocker(self, state):
+        assert assess_check_evidence(f"unit-tests: {state}") == ("READY", [])
+
+    def test_inconclusive_review_says_automation_failed_not_the_code(self):
+        evidence = {
+            "verified": False,
+            "observed": {"files": 5, "additions": 965, "deletions": 59842},
+            "expected": {"files": 1, "additions": 60, "deletions": 0},
+            "base_sha": "base123",
+            "head_sha": "head456",
+            "paths": ["docs/a.md"],
+        }
+        review = generate_markdown_review(
+            "docs: update",
+            109,
+            "feature/docs",
+            "main",
+            {},
+            ("INCONCLUSIVE", ["- **Diff integrity mismatch.**"]),
+            {},
+            evidence,
+        )
+
+        assert "Merge Readiness: ❓ INCONCLUSIVE" in review
+        assert "automation failure, not a claim that the PR code is defective" in review
+        assert "Parsed diff: **5 files, +965 / -59842**" in review
+        assert "GitHub metadata: **1 files, +60 / -0**" in review
+
+
+def test_workflow_supplies_authoritative_pr_evidence():
+    workflow = Path(".github/workflows/daedalus-review.yml").read_text()
+
+    assert "--expected-files \"$REVIEW_CHANGED_FILES\"" in workflow
+    assert "--expected-additions \"$REVIEW_ADDITIONS\"" in workflow
+    assert "--expected-deletions \"$REVIEW_DELETIONS\"" in workflow
+    assert "--base-sha \"$REVIEW_BASE_SHA\"" in workflow
+    assert "--head-sha \"$REVIEW_HEAD_SHA\"" in workflow
+    assert "review-inconclusive" in workflow
+    assert "checks: read" in workflow
+
+
+def test_review_command_fails_closed_before_model_analysis_on_bad_diff(
+    tmp_path, monkeypatch,
+):
+    diff_path = tmp_path / "pr.diff"
+    diff_path.write_text("""diff --git a/docs/a.md b/docs/a.md
+--- a/docs/a.md
++++ b/docs/a.md
+@@ -0,0 +1 @@
++one line
+""")
+    output_path = tmp_path / "review.md"
+    github_output = tmp_path / "github-output.txt"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    monkeypatch.setattr(
+        daedalus_review_module,
+        "generate_llm_review_section",
+        lambda *args, **kwargs: pytest.fail("model analysis must not run on an invalid diff"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "daedalus_review.py",
+            "--diff", str(diff_path),
+            "--repo", "IdentityOS/IdentityOS",
+            "--pr-number", "109",
+            "--head-ref", "docs/update",
+            "--base-ref", "main",
+            "--title", "docs: update",
+            "--output", str(output_path),
+            "--expected-files", "1",
+            "--expected-additions", "60",
+            "--expected-deletions", "0",
+            "--base-sha", "base123",
+            "--head-sha", "head456",
+        ],
+    )
+
+    daedalus_review_module.main()
+
+    assert "status=INCONCLUSIVE" in github_output.read_text()
+    review = output_path.read_text()
+    assert "GitHub reports `60` additions, but the downloaded diff parsed as `1`" in review
+    assert "no code-quality conclusion" in review.lower()
 
 
 class TestThinkingEngineProviderSelection:
