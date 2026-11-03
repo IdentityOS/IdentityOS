@@ -108,6 +108,14 @@ def load_daedalus_config() -> Dict[str, Any]:
     return config
 
 
+def _optional_int_env(name: str) -> Optional[int]:
+    value = os.environ.get(name, "").strip()
+    try:
+        return int(value) if value else None
+    except ValueError:
+        return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Daedalus PR Review")
     parser.add_argument("--diff", required=True, help="Path to PR diff file")
@@ -120,11 +128,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token", default="", help="GitHub token")
     parser.add_argument("--test-results", default="", help="Path to test results file for AI interpretation")
     parser.add_argument("--benchmark-results", default="", help="Path to benchmark results file for AI interpretation")
-    parser.add_argument("--expected-files", type=int, help="Authoritative changed-file count from GitHub")
-    parser.add_argument("--expected-additions", type=int, help="Authoritative addition count from GitHub")
-    parser.add_argument("--expected-deletions", type=int, help="Authoritative deletion count from GitHub")
-    parser.add_argument("--base-sha", default="", help="Exact pull request base commit")
-    parser.add_argument("--head-sha", default="", help="Exact pull request head commit")
+    parser.add_argument(
+        "--expected-files", type=int, default=_optional_int_env("REVIEW_CHANGED_FILES"),
+        help="Authoritative changed-file count from GitHub",
+    )
+    parser.add_argument(
+        "--expected-additions", type=int, default=_optional_int_env("REVIEW_ADDITIONS"),
+        help="Authoritative addition count from GitHub",
+    )
+    parser.add_argument(
+        "--expected-deletions", type=int, default=_optional_int_env("REVIEW_DELETIONS"),
+        help="Authoritative deletion count from GitHub",
+    )
+    parser.add_argument(
+        "--base-sha", default=os.environ.get("REVIEW_BASE_SHA", ""),
+        help="Exact pull request base commit",
+    )
+    parser.add_argument(
+        "--head-sha", default=os.environ.get("REVIEW_HEAD_SHA", ""),
+        help="Exact pull request head commit",
+    )
     return parser.parse_args()
 
 

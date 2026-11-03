@@ -136,12 +136,7 @@ jobs:
             --base-ref "$REVIEW_BASE_REF" \
             --title "$REVIEW_TITLE" \
             --output /tmp/daedalus-review.md \
-            --test-results /tmp/test-results.txt \
-            --base-sha "$REVIEW_BASE_SHA" \
-            --head-sha "$REVIEW_HEAD_SHA" \
-            --expected-files "$REVIEW_CHANGED_FILES" \
-            --expected-additions "$REVIEW_ADDITIONS" \
-            --expected-deletions "$REVIEW_DELETIONS"
+            --test-results /tmp/test-results.txt
 
       - name: Publish or update Daedalus review
         uses: actions/github-script@v7

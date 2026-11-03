@@ -545,13 +545,42 @@ class TestReadiness:
 def test_workflow_supplies_authoritative_pr_evidence():
     workflow = Path(".github/workflows/daedalus-review.yml").read_text()
 
-    assert "--expected-files \"$REVIEW_CHANGED_FILES\"" in workflow
-    assert "--expected-additions \"$REVIEW_ADDITIONS\"" in workflow
-    assert "--expected-deletions \"$REVIEW_DELETIONS\"" in workflow
-    assert "--base-sha \"$REVIEW_BASE_SHA\"" in workflow
-    assert "--head-sha \"$REVIEW_HEAD_SHA\"" in workflow
+    assert "REVIEW_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}" in workflow
+    assert "REVIEW_ADDITIONS: ${{ github.event.pull_request.additions }}" in workflow
+    assert "REVIEW_DELETIONS: ${{ github.event.pull_request.deletions }}" in workflow
+    assert "REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha }}" in workflow
+    assert "REVIEW_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert "--expected-files" not in workflow
     assert "review-inconclusive" in workflow
     assert "checks: read" in workflow
+
+
+def test_review_command_reads_authoritative_evidence_from_environment(
+    monkeypatch,
+):
+    monkeypatch.setenv("REVIEW_CHANGED_FILES", "5")
+    monkeypatch.setenv("REVIEW_ADDITIONS", "633")
+    monkeypatch.setenv("REVIEW_DELETIONS", "67")
+    monkeypatch.setenv("REVIEW_BASE_SHA", "base123")
+    monkeypatch.setenv("REVIEW_HEAD_SHA", "head456")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "daedalus_review.py",
+            "--diff", "pr.diff",
+            "--repo", "IdentityOS/IdentityOS",
+            "--pr-number", "116",
+            "--head-ref", "feature",
+            "--base-ref", "main",
+            "--title", "fix: review",
+            "--output", "review.md",
+        ],
+    )
+
+    args = daedalus_review_module.parse_args()
+
+    assert (args.expected_files, args.expected_additions, args.expected_deletions) == (5, 633, 67)
+    assert (args.base_sha, args.head_sha) == ("base123", "head456")
 
 
 def test_review_command_fails_closed_before_model_analysis_on_bad_diff(
