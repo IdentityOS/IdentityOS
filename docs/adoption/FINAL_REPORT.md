@@ -68,6 +68,8 @@ starts a persistent service, binds publicly, or edits `.env`.
 - Wheel built in a clean Python 3.12 container and passed `twine check`.
 - Wheel contains `idos`, `identity`, onboarding assets, and adoption modules.
 - Three independent clean Linux container installations succeeded with disabled pip cache.
+- A separate clean container fetched the installer and exact source commit
+  directly from GitHub without a clone or mounted artifact, then passed init and doctor.
 - Real Ollama inference returned `identity_model_generation` provenance.
 - A separate process reopened the stable identity, found prior conversation
   memory, and generated another real response.

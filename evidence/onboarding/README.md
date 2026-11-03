@@ -70,7 +70,13 @@ actual onboarding page over loopback HTTP, and shut down cleanly. Installation
 took **90.031 seconds** and the full path through shutdown took **105.109
 seconds**. See `final-public-facing-installer.json`.
 
-Six clean installer/evidence attempts were made in total: four accepted
+The no-clone route was also repeated without mounting a repository or wheel:
+a new container downloaded `install.sh` and the source archive from public
+commit `d59c6fdc8e0fa5916f45d0874d313970e27d96b0`, then passed initialization and
+doctor. Installation took **86.696 seconds**. See
+`github-exact-ref-no-clone.json`.
+
+Seven clean installer/evidence attempts were made in total: five accepted
 successes and two evidence-wrapper failures described in `failures.md`.
 
 ## Failure and recovery exercised

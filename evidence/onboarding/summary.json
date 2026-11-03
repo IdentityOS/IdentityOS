@@ -7,8 +7,8 @@
     "publication_status": "unpublished",
     "sha256": "fa6c2d2e41c1ad822b5877d26a64104a57ff8aa1e17458a3aaa18ba10da02c14"
   },
-  "independent_clean_install_attempts": 6,
-  "successful_attempts": 4,
+  "independent_clean_install_attempts": 7,
+  "successful_attempts": 5,
   "failed_evidence_wrapper_attempts": 2,
   "installation_ms": {
     "minimum": 60801.56,
@@ -27,6 +27,7 @@
   },
   "time_to_first_real_response_ms": 200135.0,
   "documented_installer_installation_ms": 90031,
+  "github_exact_ref_installation_ms": 86696,
   "five_minute_target_met": true,
   "human_interaction_timed": false,
   "real_inference": {
