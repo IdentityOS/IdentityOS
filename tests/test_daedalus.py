@@ -25,6 +25,7 @@ from scripts.daedalus_review import (
     assess_readiness,
     assess_check_evidence,
     reconcile_readiness,
+    render_ai_advisories,
     generate_markdown_review,
     ARCHITECTURE_LAYERS,
     CATEGORY_MAP,
@@ -451,7 +452,7 @@ class TestReadiness:
 
         assert result == ("READY", [])
 
-    def test_ai_blocker_requires_a_real_changed_path(self):
+    def test_ai_diff_claim_cannot_block_even_outside_review_scope(self):
         blocker = {
             "title": "Wrong file claim",
             "severity": "blocking",
@@ -471,7 +472,7 @@ class TestReadiness:
 
         assert result == ("READY", [])
 
-    def test_grounded_ai_blocker_explains_remediation_and_verification(self):
+    def test_model_diff_interpretation_is_advisory_even_at_a_changed_path(self):
         blocker = {
             "title": "Unchecked failure path",
             "severity": "blocking",
@@ -489,10 +490,7 @@ class TestReadiness:
             changed_paths=["core/foo.py"],
         )
 
-        assert result[0] == "NOT_READY"
-        assert "Model-derived finding at a runtime-verified changed path: `core/foo.py:12`" in result[1][0]
-        assert "Required change: Return the structured failure result." in result[1][0]
-        assert "How to verify: Add and pass a regression test" in result[1][0]
+        assert result == ("READY", [])
 
     @pytest.mark.parametrize("conclusion", ["success", "queued", "in_progress"])
     def test_nonfailing_check_cannot_be_used_as_a_blocker(self, conclusion):
@@ -534,6 +532,23 @@ class TestReadiness:
         )
 
         assert result[0] == "NOT_READY"
+
+    def test_model_diff_observation_is_labeled_unverified_and_actionable(self):
+        lines = render_ai_advisories({
+            "blockers": [{
+                "title": "Possible parser defect",
+                "evidence_source": "diff",
+                "evidence_location": "scripts/review.py:12",
+                "evidence": "The branch may reset state.",
+                "verification": "Run the multi-file parser test.",
+            }],
+            "recommendations": ["Keep the parser test."],
+        })
+        rendered = "\n".join(lines)
+
+        assert "Unverified model observations (not merge blockers)" in rendered
+        assert "Independent verification requested: Run the multi-file parser test." in rendered
+        assert "Advisory model suggestions (not merge blockers)" in rendered
 
     @pytest.mark.parametrize(
         "state",
@@ -598,6 +613,8 @@ def test_workflow_supplies_authoritative_pr_evidence():
     assert "needs: await-checks" in workflow
     assert "Independent checks did not finish within 20 minutes" in workflow
     assert "concurrency:" in workflow
+    assert workflow.count("const latestByName = new Map();") == 2
+    assert ".filter(run => !['await-checks', 'review'].includes(run.name))" in workflow
 
 
 def test_review_command_reads_authoritative_evidence_from_environment(
