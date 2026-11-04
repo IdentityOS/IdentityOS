@@ -159,10 +159,9 @@ def read_diff(path: str) -> str:
 def parse_diff_files(diff: str) -> List[Dict[str, Any]]:
     files: List[Dict[str, Any]] = []
     current_file: Dict[str, Any] = {}
+    in_hunk = False
     for line in diff.split("\n"):
-        if line.startswith("+++ b/"):
-            current_file["path"] = line[6:]
-        elif line.startswith("diff --git"):
+        if line.startswith("diff --git"):
             if current_file:
                 files.append(current_file)
             path = ""
@@ -173,11 +172,19 @@ def parse_diff_files(diff: str) -> List[Dict[str, Any]]:
             except ValueError:
                 pass
             current_file = {"path": path, "additions": 0, "deletions": 0, "lines": []}
-        elif current_file:
-            if line.startswith("+") and not line.startswith("+++"):
+            in_hunk = False
+        elif line.startswith("+++ b/"):
+            current_file["path"] = line[6:]
+        elif current_file and line.startswith("@@"):
+            in_hunk = True
+        elif current_file and in_hunk:
+            # Count every hunk payload line. A removed Markdown `---` line is
+            # represented as `----`; treating every `---*` line as a file
+            # header caused Daedalus to reject a complete, exact diff.
+            if line.startswith("+"):
                 current_file["additions"] += 1
                 current_file["lines"].append(line)
-            elif line.startswith("-") and not line.startswith("---"):
+            elif line.startswith("-"):
                 current_file["deletions"] += 1
     if current_file:
         files.append(current_file)
@@ -510,19 +517,33 @@ def assess_readiness(findings: Dict[str, List[str]]) -> Tuple[str, List[str]]:
 
 
 def assess_check_evidence(check_evidence: str) -> Tuple[str, List[str]]:
-    """Turn observed failing check conclusions into deterministic blockers."""
+    """Turn observed check conclusions into deterministic readiness evidence."""
     failure_states = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
+    pending_states = {"queued", "pending", "requested", "waiting", "in_progress"}
     blockers: List[str] = []
+    pending: List[str] = []
     for line in check_evidence.splitlines():
         name, separator, conclusion = line.rpartition(":")
-        if not separator or conclusion.strip().lower() not in failure_states:
+        if not separator:
             continue
-        blockers.append(
-            f"- \u274c **Check `{name.strip()}` reported `{conclusion.strip()}`.** "
-            "This is observed GitHub check evidence. Required change: inspect and correct the failing "
-            "job or implementation, then rerun it to a successful conclusion."
-        )
-    return ("NOT_READY", blockers) if blockers else ("READY", [])
+        state = conclusion.strip().lower()
+        if state in failure_states:
+            blockers.append(
+                f"- \u274c **Check `{name.strip()}` reported `{conclusion.strip()}`.** "
+                "This is observed GitHub check evidence. Required change: inspect and correct the failing "
+                "job or implementation, then rerun it to a successful conclusion."
+            )
+        elif state in pending_states:
+            pending.append(
+                f"- **Check `{name.strip()}` is `{conclusion.strip()}`.** "
+                "Merge readiness is not yet established. Required action: wait for the check to finish, "
+                "then rerun Daedalus against the completed result."
+            )
+    if blockers:
+        return "NOT_READY", blockers
+    if pending:
+        return "INCONCLUSIVE", pending
+    return "READY", []
 
 
 def reconcile_readiness(
@@ -532,7 +553,12 @@ def reconcile_readiness(
     changed_paths: Optional[List[str]] = None,
     check_evidence: str = "",
 ) -> Tuple[str, List[str]]:
-    """Accept AI downgrades only when each blocker is tied to supplied evidence."""
+    """Accept an AI downgrade only when it cites an observed failed check.
+
+    A model naming a changed path establishes review scope, not that the model's
+    interpretation of the code is true. Deterministic analyzers already affect
+    ``static_readiness``; model interpretations of diff content remain advisory.
+    """
     severity = {"READY": 0, "NEEDS_WORK": 1, "NOT_READY": 2}
     ai_verdict = ai_analysis.get("verdict") if isinstance(ai_analysis, dict) else None
     if ai_verdict not in severity:
@@ -558,7 +584,13 @@ def validate_ai_blockers(
     changed_paths: List[str],
     check_evidence: str,
 ) -> List[Dict[str, str]]:
-    """Reject vague or ungrounded model blockers before they affect readiness."""
+    """Allow only observed failed checks to support model-assisted blockers.
+
+    ``changed_paths`` remains part of the public helper signature for callers
+    that supply review scope, but a path match is deliberately insufficient
+    evidence for a readiness downgrade.
+    """
+    del changed_paths
     required = {
         "title",
         "severity",
@@ -578,13 +610,7 @@ def validate_ai_blockers(
             continue
         source = normalized["evidence_source"]
         location = normalized["evidence_location"]
-        if source == "diff":
-            if not any(location == path or location.startswith(f"{path}:") for path in changed_paths):
-                continue
-        elif source == "check":
-            if not _check_reports_failure(location, check_evidence):
-                continue
-        else:
+        if source != "check" or not _check_reports_failure(location, check_evidence):
             continue
         valid.append(normalized)
     return valid
@@ -600,18 +626,38 @@ def _check_reports_failure(check_name: str, check_evidence: str) -> bool:
 
 
 def render_blocker(blocker: Dict[str, str]) -> str:
-    evidence_label = (
-        "Observed check evidence"
-        if blocker["evidence_source"] == "check"
-        else "Model-derived finding at a runtime-verified changed path"
-    )
     return (
         f"- **{blocker['title']}**\n"
-        f"  - {evidence_label}: `{blocker['evidence_location']}` \u2014 {blocker['evidence']}\n"
+        f"  - Observed check evidence: `{blocker['evidence_location']}` \u2014 {blocker['evidence']}\n"
         f"  - Why it matters: {blocker['impact']}\n"
         f"  - Required change: {blocker['required_change']}\n"
         f"  - How to verify: {blocker['verification']}"
     )
+
+
+def render_ai_advisories(ai_analysis: Dict[str, Any]) -> List[str]:
+    """Render model observations without presenting them as established facts."""
+    lines: List[str] = []
+    diff_observations = [
+        item for item in ai_analysis.get("blockers", [])
+        if isinstance(item, dict) and item.get("evidence_source") == "diff"
+    ]
+    if diff_observations:
+        lines.extend(["", "### Unverified model observations (not merge blockers)", ""])
+        for item in diff_observations[:5]:
+            title = str(item.get("title", "Review observation"))
+            location = str(item.get("evidence_location", "unspecified location"))
+            evidence_text = str(item.get("evidence", "No evidence text supplied."))
+            verification = str(item.get("verification", "Verify independently."))
+            lines.append(
+                f"- **{title}** at `{location}`: {evidence_text} "
+                f"Independent verification requested: {verification}"
+            )
+    recommendations = ai_analysis.get("recommendations", [])
+    if recommendations:
+        lines.extend(["", "### Advisory model suggestions (not merge blockers)", ""])
+        lines.extend(f"- {item}" for item in recommendations[:5])
+    return lines
 
 
 def generate_markdown_review(
@@ -894,10 +940,7 @@ Analyze this PR and respond in the specified JSON format."""
             lines.append("**Model interpretation (not execution evidence):** " + str(
                 ai_analysis.get("summary", "No summary supplied.")
             ))
-            recommendations = ai_analysis.get("recommendations", [])
-            if recommendations:
-                lines.extend(["", "### Advisory model suggestions (not merge blockers)", ""])
-                lines.extend(f"- {item}" for item in recommendations[:5])
+            lines.extend(render_ai_advisories(ai_analysis))
         else:
             lines.append("Model analysis was not used because it did not return valid structured JSON.")
         lines.append("")
@@ -954,6 +997,11 @@ def main() -> None:
         if check_readiness[0] == "NOT_READY":
             readiness = (
                 "NOT_READY",
+                readiness[1] + check_readiness[1],
+            )
+        elif check_readiness[0] == "INCONCLUSIVE":
+            readiness = (
+                "INCONCLUSIVE",
                 readiness[1] + check_readiness[1],
             )
         llm_section, ai_analysis = generate_llm_review_section(
