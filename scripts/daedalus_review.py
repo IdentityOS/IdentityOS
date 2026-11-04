@@ -159,10 +159,9 @@ def read_diff(path: str) -> str:
 def parse_diff_files(diff: str) -> List[Dict[str, Any]]:
     files: List[Dict[str, Any]] = []
     current_file: Dict[str, Any] = {}
+    in_hunk = False
     for line in diff.split("\n"):
-        if line.startswith("+++ b/"):
-            current_file["path"] = line[6:]
-        elif line.startswith("diff --git"):
+        if line.startswith("diff --git"):
             if current_file:
                 files.append(current_file)
             path = ""
@@ -173,11 +172,19 @@ def parse_diff_files(diff: str) -> List[Dict[str, Any]]:
             except ValueError:
                 pass
             current_file = {"path": path, "additions": 0, "deletions": 0, "lines": []}
-        elif current_file:
-            if line.startswith("+") and not line.startswith("+++"):
+            in_hunk = False
+        elif line.startswith("+++ b/"):
+            current_file["path"] = line[6:]
+        elif current_file and line.startswith("@@"):
+            in_hunk = True
+        elif current_file and in_hunk:
+            # Count every hunk payload line. A removed Markdown `---` line is
+            # represented as `----`; treating every `---*` line as a file
+            # header caused Daedalus to reject a complete, exact diff.
+            if line.startswith("+"):
                 current_file["additions"] += 1
                 current_file["lines"].append(line)
-            elif line.startswith("-") and not line.startswith("---"):
+            elif line.startswith("-"):
                 current_file["deletions"] += 1
     if current_file:
         files.append(current_file)
@@ -510,19 +517,33 @@ def assess_readiness(findings: Dict[str, List[str]]) -> Tuple[str, List[str]]:
 
 
 def assess_check_evidence(check_evidence: str) -> Tuple[str, List[str]]:
-    """Turn observed failing check conclusions into deterministic blockers."""
+    """Turn observed check conclusions into deterministic readiness evidence."""
     failure_states = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
+    pending_states = {"queued", "pending", "requested", "waiting", "in_progress"}
     blockers: List[str] = []
+    pending: List[str] = []
     for line in check_evidence.splitlines():
         name, separator, conclusion = line.rpartition(":")
-        if not separator or conclusion.strip().lower() not in failure_states:
+        if not separator:
             continue
-        blockers.append(
-            f"- \u274c **Check `{name.strip()}` reported `{conclusion.strip()}`.** "
-            "This is observed GitHub check evidence. Required change: inspect and correct the failing "
-            "job or implementation, then rerun it to a successful conclusion."
-        )
-    return ("NOT_READY", blockers) if blockers else ("READY", [])
+        state = conclusion.strip().lower()
+        if state in failure_states:
+            blockers.append(
+                f"- \u274c **Check `{name.strip()}` reported `{conclusion.strip()}`.** "
+                "This is observed GitHub check evidence. Required change: inspect and correct the failing "
+                "job or implementation, then rerun it to a successful conclusion."
+            )
+        elif state in pending_states:
+            pending.append(
+                f"- **Check `{name.strip()}` is `{conclusion.strip()}`.** "
+                "Merge readiness is not yet established. Required action: wait for the check to finish, "
+                "then rerun Daedalus against the completed result."
+            )
+    if blockers:
+        return "NOT_READY", blockers
+    if pending:
+        return "INCONCLUSIVE", pending
+    return "READY", []
 
 
 def reconcile_readiness(
@@ -954,6 +975,11 @@ def main() -> None:
         if check_readiness[0] == "NOT_READY":
             readiness = (
                 "NOT_READY",
+                readiness[1] + check_readiness[1],
+            )
+        elif check_readiness[0] == "INCONCLUSIVE":
+            readiness = (
+                "INCONCLUSIVE",
                 readiness[1] + check_readiness[1],
             )
         llm_section, ai_analysis = generate_llm_review_section(

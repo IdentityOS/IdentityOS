@@ -56,10 +56,12 @@ class TestDiffParsing:
         diff = """diff --git a/a.py b/a.py
 --- a/a.py
 +++ b/a.py
+@@ -0,0 +1 @@
 +line1
 diff --git a/b.py b/b.py
 --- a/b.py
 +++ b/b.py
+@@ -0,0 +1,2 @@
 +line2
 +line3"""
         files = parse_diff_files(diff)
@@ -87,6 +89,36 @@ deleted file mode 100644
 
         assert files[0]["path"] == "old.py"
         assert files[0]["deletions"] == 1
+
+    def test_hunk_content_that_resembles_diff_headers_is_counted(self):
+        diff = """diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,2 @@
+----
+-old
+++++
++new"""
+
+        files = parse_diff_files(diff)
+
+        assert files[0]["additions"] == 2
+        assert files[0]["deletions"] == 2
+
+    def test_binary_patch_payload_is_not_counted_as_text(self):
+        diff = """diff --git a/image.png b/image.png
+new file mode 100644
+index 0000000..1234567
+GIT binary patch
+literal 3
++abc
+-def"""
+
+        files = parse_diff_files(diff)
+
+        assert files[0]["path"] == "image.png"
+        assert files[0]["additions"] == 0
+        assert files[0]["deletions"] == 0
 
 
 class TestDiffEvidence:
@@ -512,9 +544,17 @@ class TestReadiness:
         assert f"reported `{state}`" in readiness[1][0]
         assert "This is observed GitHub check evidence" in readiness[1][0]
 
-    @pytest.mark.parametrize("state", ["success", "neutral", "skipped", "queued", "in_progress"])
+    @pytest.mark.parametrize("state", ["success", "neutral", "skipped"])
     def test_nonfailing_check_does_not_create_a_false_blocker(self, state):
         assert assess_check_evidence(f"unit-tests: {state}") == ("READY", [])
+
+    @pytest.mark.parametrize("state", ["queued", "pending", "requested", "waiting", "in_progress"])
+    def test_unfinished_check_makes_readiness_inconclusive(self, state):
+        readiness = assess_check_evidence(f"unit-tests: {state}")
+
+        assert readiness[0] == "INCONCLUSIVE"
+        assert f"is `{state}`" in readiness[1][0]
+        assert "wait for the check to finish" in readiness[1][0]
 
     def test_inconclusive_review_says_automation_failed_not_the_code(self):
         evidence = {
@@ -553,6 +593,9 @@ def test_workflow_supplies_authoritative_pr_evidence():
     assert "--expected-files" not in workflow
     assert "review-inconclusive" in workflow
     assert "checks: read" in workflow
+    assert "needs: await-checks" in workflow
+    assert "Independent checks did not finish within 20 minutes" in workflow
+    assert "concurrency:" in workflow
 
 
 def test_review_command_reads_authoritative_evidence_from_environment(
