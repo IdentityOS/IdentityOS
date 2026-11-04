@@ -15,8 +15,12 @@ counts with GitHub's pull request metadata. A mismatch produces an
 `INCONCLUSIVE` result with the exact discrepancy. It does not produce a code
 quality verdict from incomplete input.
 
-Independent checks run outside the privileged review job. Daedalus waits for
-those checks to finish and records their conclusions. The readiness states are:
+Independent checks run outside the privileged review job. Daedalus requires the
+`benchmark` check to register and waits for every registered independent check
+to finish before recording their conclusions. Merely observing another quick
+check is not sufficient evidence that the queued provider benchmark is absent.
+The wait budget is 60 minutes so a benchmark queued behind a main-branch run can
+complete without producing a false timeout. The readiness states are:
 
 * `READY`: no deterministic blocker or observed failed check was found.
 * `NEEDS_WORK`: a deterministic warning requires a change.
