@@ -91,14 +91,16 @@ deleted file mode 100644
         assert files[0]["deletions"] == 1
 
     def test_hunk_content_that_resembles_diff_headers_is_counted(self):
-        diff = """diff --git a/README.md b/README.md
---- a/README.md
-+++ b/README.md
-@@ -1,2 +1,2 @@
-----
--old
-++++
-+new"""
+        diff = "\n".join([
+            "diff --git a/README.md b/README.md",
+            "--- a/README.md",
+            "+++ b/README.md",
+            "@@ -1,2 +1,2 @@",
+            "----",
+            "-old",
+            "++++",
+            "+new",
+        ])
 
         files = parse_diff_files(diff)
 

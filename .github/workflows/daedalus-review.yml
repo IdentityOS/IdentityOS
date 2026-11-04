@@ -70,6 +70,7 @@ jobs:
     concurrency:
       group: identityos-provider
       cancel-in-progress: false
+      queue: max
     permissions:
       checks: read
       contents: read
