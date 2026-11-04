@@ -326,8 +326,8 @@ TRUST RULES:
 - The authoritative review scope lists the only files and revisions under review. Never claim that another file changed.
 - Diff size, layer count, a critical-file label, or general architectural concern is context, not a blocker by itself.
 - Never claim a test failed unless the supplied check evidence reports that failure.
-- A NEEDS_WORK or NOT_READY verdict requires at least one blocker with every evidence field below completed.
-- Diff evidence must name an exact path whose patch content appears in the model preview (optionally with a line). Check evidence must name an exact supplied check.
+- Model interpretation of source code is not execution evidence. Put every diff-based concern in recommendations, where it remains advisory until independently verified.
+- A NEEDS_WORK or NOT_READY verdict requires at least one blocker tied to an exact supplied check whose observed conclusion is a failure state.
 - If evidence is insufficient to establish a defect, do not invent one. Use READY with advisory recommendations.
 - Recommendations are advisory unless they also appear as validated blockers.
 
@@ -346,8 +346,8 @@ Respond in JSON with:
 - "test_quality": "strong" | "adequate" | "insufficient"
 - "reviewability": "well-structured" | "could be improved" | "hard to follow"
 - "blockers": list of objects containing "title", "severity" ("blocking" or "warning"),
-  "evidence_source" ("diff" or "check"), "evidence_location" (an exact changed path/line
-  or check name), "evidence" (an observed fact), "impact", "required_change", and "verification"
+  "evidence_source" (always "check"), "evidence_location" (an exact supplied failed
+  check name), "evidence" (its observed failure), "impact", "required_change", and "verification"
 - "recommendations": list of specific, actionable items
 - "proactive_actions": list of things Daedalus will do (create docs, file issues, open PRs)"""
 

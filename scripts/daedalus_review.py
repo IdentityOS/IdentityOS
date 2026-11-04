@@ -553,7 +553,12 @@ def reconcile_readiness(
     changed_paths: Optional[List[str]] = None,
     check_evidence: str = "",
 ) -> Tuple[str, List[str]]:
-    """Accept AI downgrades only when each blocker is tied to supplied evidence."""
+    """Accept an AI downgrade only when it cites an observed failed check.
+
+    A model naming a changed path establishes review scope, not that the model's
+    interpretation of the code is true. Deterministic analyzers already affect
+    ``static_readiness``; model interpretations of diff content remain advisory.
+    """
     severity = {"READY": 0, "NEEDS_WORK": 1, "NOT_READY": 2}
     ai_verdict = ai_analysis.get("verdict") if isinstance(ai_analysis, dict) else None
     if ai_verdict not in severity:
@@ -579,7 +584,13 @@ def validate_ai_blockers(
     changed_paths: List[str],
     check_evidence: str,
 ) -> List[Dict[str, str]]:
-    """Reject vague or ungrounded model blockers before they affect readiness."""
+    """Allow only observed failed checks to support model-assisted blockers.
+
+    ``changed_paths`` remains part of the public helper signature for callers
+    that supply review scope, but a path match is deliberately insufficient
+    evidence for a readiness downgrade.
+    """
+    del changed_paths
     required = {
         "title",
         "severity",
@@ -599,13 +610,7 @@ def validate_ai_blockers(
             continue
         source = normalized["evidence_source"]
         location = normalized["evidence_location"]
-        if source == "diff":
-            if not any(location == path or location.startswith(f"{path}:") for path in changed_paths):
-                continue
-        elif source == "check":
-            if not _check_reports_failure(location, check_evidence):
-                continue
-        else:
+        if source != "check" or not _check_reports_failure(location, check_evidence):
             continue
         valid.append(normalized)
     return valid
@@ -621,18 +626,38 @@ def _check_reports_failure(check_name: str, check_evidence: str) -> bool:
 
 
 def render_blocker(blocker: Dict[str, str]) -> str:
-    evidence_label = (
-        "Observed check evidence"
-        if blocker["evidence_source"] == "check"
-        else "Model-derived finding at a runtime-verified changed path"
-    )
     return (
         f"- **{blocker['title']}**\n"
-        f"  - {evidence_label}: `{blocker['evidence_location']}` \u2014 {blocker['evidence']}\n"
+        f"  - Observed check evidence: `{blocker['evidence_location']}` \u2014 {blocker['evidence']}\n"
         f"  - Why it matters: {blocker['impact']}\n"
         f"  - Required change: {blocker['required_change']}\n"
         f"  - How to verify: {blocker['verification']}"
     )
+
+
+def render_ai_advisories(ai_analysis: Dict[str, Any]) -> List[str]:
+    """Render model observations without presenting them as established facts."""
+    lines: List[str] = []
+    diff_observations = [
+        item for item in ai_analysis.get("blockers", [])
+        if isinstance(item, dict) and item.get("evidence_source") == "diff"
+    ]
+    if diff_observations:
+        lines.extend(["", "### Unverified model observations (not merge blockers)", ""])
+        for item in diff_observations[:5]:
+            title = str(item.get("title", "Review observation"))
+            location = str(item.get("evidence_location", "unspecified location"))
+            evidence_text = str(item.get("evidence", "No evidence text supplied."))
+            verification = str(item.get("verification", "Verify independently."))
+            lines.append(
+                f"- **{title}** at `{location}`: {evidence_text} "
+                f"Independent verification requested: {verification}"
+            )
+    recommendations = ai_analysis.get("recommendations", [])
+    if recommendations:
+        lines.extend(["", "### Advisory model suggestions (not merge blockers)", ""])
+        lines.extend(f"- {item}" for item in recommendations[:5])
+    return lines
 
 
 def generate_markdown_review(
@@ -915,10 +940,7 @@ Analyze this PR and respond in the specified JSON format."""
             lines.append("**Model interpretation (not execution evidence):** " + str(
                 ai_analysis.get("summary", "No summary supplied.")
             ))
-            recommendations = ai_analysis.get("recommendations", [])
-            if recommendations:
-                lines.extend(["", "### Advisory model suggestions (not merge blockers)", ""])
-                lines.extend(f"- {item}" for item in recommendations[:5])
+            lines.extend(render_ai_advisories(ai_analysis))
         else:
             lines.append("Model analysis was not used because it did not return valid structured JSON.")
         lines.append("")

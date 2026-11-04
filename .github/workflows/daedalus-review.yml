@@ -43,7 +43,14 @@ jobs:
                 ref: sha,
                 per_page: 100
               });
-              const independent = response.data.check_runs.filter(
+              const latestByName = new Map();
+              for (const run of response.data.check_runs) {
+                const prior = latestByName.get(run.name);
+                const runTime = Date.parse(run.started_at || run.created_at || 0);
+                const priorTime = Date.parse(prior?.started_at || prior?.created_at || 0);
+                if (!prior || runTime > priorTime) latestByName.set(run.name, run);
+              }
+              const independent = [...latestByName.values()].filter(
                 run => !ignoredNames.has(run.name)
               );
               const pending = independent.filter(run => !terminal.has(run.status));
@@ -137,11 +144,18 @@ jobs:
               checkRuns.push(...response.data.check_runs);
               if (response.data.check_runs.length < 100) break;
             }
+            const latestByName = new Map();
+            for (const run of checkRuns) {
+              const prior = latestByName.get(run.name);
+              const runTime = Date.parse(run.started_at || run.created_at || 0);
+              const priorTime = Date.parse(prior?.started_at || prior?.created_at || 0);
+              if (!prior || runTime > priorTime) latestByName.set(run.name, run);
+            }
             const lines = [
               `Untrusted head SHA: ${sha}`,
               'Pull request code is tested only by separate read-only jobs.',
-              ...checkRuns
-                .filter(run => run.name !== 'review')
+              ...[...latestByName.values()]
+                .filter(run => !['await-checks', 'review'].includes(run.name))
                 .map(run => `${run.name}: ${run.conclusion || run.status}`)
             ];
             fs.writeFileSync(process.env.RESULTS_PATH, lines.join('\n') + '\n', {mode: 0o600});
