@@ -1,0 +1,15 @@
+{
+  "actors": 16,
+  "creators": 12,
+  "creator_ratio": 0.75,
+  "steps": 96,
+  "passed": 96,
+  "failures": [],
+  "artifact_sha256": "3d23ed0f5073c5d0f0892615642173f330ec762ccf92098d547479c0228b23da",
+  "limitations": [
+    "Synthetic workload; no user adoption predictions.",
+    "Python SDK exercised; JavaScript SDK and model chat are not covered.",
+    "Identity consumption uses portable SDK import; registry install CLI remains unverified.",
+    "Four capability creators adapt the engineer-authored template; independent human coding behavior is not modeled."
+  ]
+}

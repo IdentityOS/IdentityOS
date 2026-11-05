@@ -1,0 +1,4 @@
+{
+  "passed": false,
+  "error": "SkillForgeError: manifest does not declare every acceptance-tested skill"
+}

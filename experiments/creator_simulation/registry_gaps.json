@@ -1,0 +1,6 @@
+{
+  "legacy_publish_output": "  Publishing 'creator/poet'...\n  To add to the registry, copy /tmp/idos-registry-gap-38q73m5m/registry/identities/creator/poet/manifest.json to:\n    registry/identities/creator/poet.json\n  Then add an entry to registry/index.json and submit a PR.\n",
+  "legacy_publish_index_unchanged": true,
+  "namespaced_install_error": "FileNotFoundError: [Errno 2] No such file or directory: '/tmp/idos-registry-gap-38q73m5m/cli/../.identity_store/creator/poet.json'",
+  "namespaced_install_file_exists": false
+}

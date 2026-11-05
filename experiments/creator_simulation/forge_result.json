@@ -1,0 +1,111 @@
+{
+  "passed": true,
+  "capability_id": "creator_probe",
+  "artifact_path": "/tmp/identityos-user-sim.MQfAul/.identity_forge/artifacts/creator_probe/4adea46b8b497449d460325d955f9c8c747c8dff47f3f2ec0539b15382a0674c.idcap",
+  "artifact_sha256": "4adea46b8b497449d460325d955f9c8c747c8dff47f3f2ec0539b15382a0674c",
+  "source_path": "/tmp/identityos-user-sim.MQfAul/core/capabilities/creator_probe/__init__.py",
+  "manifest": {
+    "id": "creator_probe",
+    "name": "Creator Probe",
+    "version": "1.0.0",
+    "author": "Daedalus",
+    "description": "Runs Identity SDK lifecycle probe",
+    "permissions": [
+      "filesystem"
+    ],
+    "dependencies": [
+      "identityos",
+      "tempfile"
+    ],
+    "skills": [
+      {
+        "name": "creator_probe.run",
+        "description": "SDK lifecycle probe \u2013 creates an identity, stores a memory and a goal, exports, reloads and verifies persistence."
+      }
+    ]
+  },
+  "acceptance_cases": [
+    {
+      "name": "Publish a poetry editor",
+      "skill": "creator_probe.run",
+      "params": {
+        "text": "Publish a poetry editor"
+      },
+      "expected": {
+        "text": "Publish a poetry editor",
+        "memory_persisted": true,
+        "goal_persisted": true,
+        "export_exists": true
+      },
+      "expect_success": true,
+      "grants": [
+        "filesystem"
+      ]
+    },
+    {
+      "name": "Build a research assistant",
+      "skill": "creator_probe.run",
+      "params": {
+        "text": "Build a research assistant"
+      },
+      "expected": {
+        "text": "Build a research assistant",
+        "memory_persisted": true,
+        "goal_persisted": true,
+        "export_exists": true
+      },
+      "expect_success": true,
+      "grants": [
+        "filesystem"
+      ]
+    }
+  ],
+  "isolation_report": {
+    "captured_output": "",
+    "case_count": 2,
+    "cases": [
+      {
+        "error": null,
+        "expected": {
+          "export_exists": true,
+          "goal_persisted": true,
+          "memory_persisted": true,
+          "text": "Publish a poetry editor"
+        },
+        "name": "Publish a poetry editor",
+        "observed": {
+          "export_exists": true,
+          "goal_persisted": true,
+          "memory_persisted": true,
+          "text": "Publish a poetry editor"
+        },
+        "passed": true,
+        "skill": "creator_probe.run",
+        "success": true
+      },
+      {
+        "error": null,
+        "expected": {
+          "export_exists": true,
+          "goal_persisted": true,
+          "memory_persisted": true,
+          "text": "Build a research assistant"
+        },
+        "name": "Build a research assistant",
+        "observed": {
+          "export_exists": true,
+          "goal_persisted": true,
+          "memory_persisted": true,
+          "text": "Build a research assistant"
+        },
+        "passed": true,
+        "skill": "creator_probe.run",
+        "success": true
+      }
+    ],
+    "duration_ms": 540.369,
+    "passed": true,
+    "exit_code": 0,
+    "wall_duration_ms": 1137.341
+  }
+}
