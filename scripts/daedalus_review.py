@@ -637,6 +637,10 @@ def render_blocker(blocker: Dict[str, str]) -> str:
 
 def render_ai_advisories(ai_analysis: Dict[str, Any]) -> List[str]:
     """Render model observations without presenting them as established facts."""
+    def clean(value: Any, fallback: str) -> str:
+        rendered = " ".join(str(value or fallback).split())
+        return rendered[:1000]
+
     lines: List[str] = []
     diff_observations = [
         item for item in ai_analysis.get("blockers", [])
@@ -645,18 +649,35 @@ def render_ai_advisories(ai_analysis: Dict[str, Any]) -> List[str]:
     if diff_observations:
         lines.extend(["", "### Unverified model observations (not merge blockers)", ""])
         for item in diff_observations[:5]:
-            title = str(item.get("title", "Review observation"))
-            location = str(item.get("evidence_location", "unspecified location"))
-            evidence_text = str(item.get("evidence", "No evidence text supplied."))
-            verification = str(item.get("verification", "Verify independently."))
+            title = clean(item.get("title"), "Review observation")
+            location = clean(item.get("evidence_location"), "unspecified location")
+            evidence_text = clean(item.get("evidence"), "No evidence text supplied.")
+            verification = clean(item.get("verification"), "Verify independently.")
             lines.append(
                 f"- **{title}** at `{location}`: {evidence_text} "
                 f"Independent verification requested: {verification}"
             )
     recommendations = ai_analysis.get("recommendations", [])
-    if recommendations:
+    if isinstance(recommendations, list) and recommendations:
         lines.extend(["", "### Advisory model suggestions (not merge blockers)", ""])
-        lines.extend(f"- {item}" for item in recommendations[:5])
+        for item in recommendations[:5]:
+            if not isinstance(item, dict):
+                lines.append(f"- {clean(item, 'Model suggestion')}")
+                continue
+            title = clean(item.get("title"), "Model suggestion")
+            location = clean(item.get("evidence_location"), "unspecified location")
+            rationale = clean(item.get("evidence"), "No rationale supplied.")
+            required_change = clean(
+                item.get("required_change") or item.get("action"),
+                "Review and verify this suggestion independently.",
+            )
+            verification = clean(item.get("verification"), "Verify independently.")
+            lines.extend([
+                f"- **{title}**",
+                f"  - Unverified model rationale: `{location}` — {rationale}",
+                f"  - Suggested change: {required_change}",
+                f"  - Suggested verification: {verification}",
+            ])
     return lines
 
 
