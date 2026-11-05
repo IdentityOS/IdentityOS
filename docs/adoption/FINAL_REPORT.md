@@ -2,7 +2,7 @@
 
 Date: 2026-11-03
 Baseline commit: `394bc8c7cb09ffb282b2c1a7532761e63e7ee244`
-Delivery commit: resolve with `git rev-parse HEAD` on the delivered branch.
+Delivery merge commit: `3a0f64a0a28d8d7fe5dc02ab0b96d533031c7611`
 
 ## Initial installation problems
 
@@ -70,6 +70,9 @@ starts a persistent service, binds publicly, or edits `.env`.
 - Three independent clean Linux container installations succeeded with disabled pip cache.
 - A separate clean container fetched the installer and exact source commit
   directly from GitHub without a clone or mounted artifact, then passed init and doctor.
+- After merge, two additional clean containers fetched the installer from the
+  public `main` URL and installed the exact delivery merge commit without a clone.
+  The final acceptance command exited zero after init and doctor.
 - Real Ollama inference returned `identity_model_generation` provenance.
 - A separate process reopened the stable identity, found prior conversation
   memory, and generated another real response.
@@ -87,6 +90,13 @@ first response in 200.135 seconds from harness start, so the automated
 five-minute target was met. The full run including fresh-process inference and
 portability took 280.028 seconds. The documented installer path itself took
 90.031 seconds on a separate clean container.
+
+The post-merge public-main run installed the exact delivery commit in 113.75
+seconds, initialized it in 1.42 seconds, and passed machine-readable doctor.
+An earlier post-merge attempt installed in 88.79 seconds and also passed init
+and doctor, but its outer command failed on an extra, undocumented
+`idos --version` probe. That attempt is retained as failure evidence rather
+than converted into a successful command.
 
 These timings exclude provider-account acquisition and Ollama model download.
 The model was already present on the host. Automated onboarding is not a human
@@ -112,18 +122,19 @@ not enabled by onboarding. See `../../evidence/onboarding/security-checks.md`.
 ## Remaining limitations
 
 - The artifact is unpublished until an authorized release is made.
-- The no-clone `main` installer becomes publicly usable only after merge.
 - No cloud provider was verified because no credential was available.
 - No human-first-run timing, macOS, WSL2, or machine reboot trial was available.
 - Local CPU inference is materially slower than the installation and UI path.
 - Remote dashboard hosting is deliberately not supplied; use a separately
   authenticated proxy if needed.
+- Runtime version is reported by `idos doctor`; a top-level `idos --version`
+  convenience flag is not implemented.
 
 ## Recommended next improvements
 
-1. Merge, then repeat the installer test from the public raw URL and Git ref.
-2. Run timed unfamiliar-human trials.
-3. Add macOS and WSL2 clean runners.
-4. Publish signed/tagged artifacts only with explicit release authorization.
+1. Run timed unfamiliar-human trials.
+2. Add macOS and WSL2 clean runners.
+3. Publish signed/tagged artifacts only with explicit release authorization.
+4. Add a conventional top-level `idos --version` flag.
 5. Add Ollama model discovery and quantify smaller-context performance without
    weakening identity continuity.

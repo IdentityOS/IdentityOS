@@ -76,8 +76,20 @@ commit `d59c6fdc8e0fa5916f45d0874d313970e27d96b0`, then passed initialization an
 doctor. Installation took **86.696 seconds**. See
 `github-exact-ref-no-clone.json`.
 
-Seven clean installer/evidence attempts were made in total: five accepted
-successes and two evidence-wrapper failures described in `failures.md`.
+After PR #117 merged, two additional fresh containers downloaded the installer
+from the public `main` URL and installed exact delivery commit
+`3a0f64a0a28d8d7fe5dc02ab0b96d533031c7611` without a clone or mounted artifact.
+The final acceptance attempt installed in **113.75 seconds**, initialized in
+**1.42 seconds**, passed doctor, and exited zero. The first post-merge attempt
+installed in **88.79 seconds** and passed init and doctor, but its outer command
+exited 2 because an extra `idos --version` probe is not supported. Both attempts
+are preserved in `public-main-post-merge.json`.
+
+Nine clean installer/evidence attempts were made in total: six accepted
+successes and three outer-command/evidence-wrapper failures described here and
+in `failures.md`. The first post-merge attempt still establishes successful
+installation, initialization, and doctor behavior, but is not counted as an
+accepted zero-exit journey.
 
 ## Failure and recovery exercised
 

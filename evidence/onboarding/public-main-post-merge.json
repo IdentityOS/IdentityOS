@@ -1,0 +1,57 @@
+{
+  "schema_version": "identityos.public_install.evidence.v1",
+  "run_id": "public-main-post-merge",
+  "delivery_merge_commit": "3a0f64a0a28d8d7fe5dc02ab0b96d533031c7611",
+  "base_image": "python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016",
+  "public_installer_url": "https://raw.githubusercontent.com/IdentityOS/IdentityOS/main/install.sh",
+  "source_archive_sha256": "7e3cbda4bc0ac6f5714e5fa886d83372f54359d0591a9e50072029e124152bd8",
+  "manual_clone_required": false,
+  "local_artifact_mounted": false,
+  "cache_state": "fresh container; no persisted pip cache",
+  "network_state": "online",
+  "preparation": "curl, CA certificates, and GNU time installed before the IdentityOS timer",
+  "install_command": "curl -fsSL https://raw.githubusercontent.com/IdentityOS/IdentityOS/main/install.sh | bash -s -- --ref 3a0f64a0a28d8d7fe5dc02ab0b96d533031c7611",
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-11-05T01:42:45Z",
+      "finished_at": "2026-11-05T01:44:17Z",
+      "installation_seconds": 88.79,
+      "initialization_seconds": 1.74,
+      "installation_succeeded": true,
+      "initialization_succeeded": true,
+      "doctor_succeeded": true,
+      "doctor_version": "2.1.0",
+      "outer_exit_status": 2,
+      "failure": "The additional undocumented `idos --version` probe returned argparse usage because the top-level flag is not implemented."
+    },
+    {
+      "attempt": 2,
+      "started_at": "2026-11-05T01:45:20Z",
+      "finished_at": "2026-11-05T01:47:16Z",
+      "installation_seconds": 113.75,
+      "initialization_seconds": 1.42,
+      "installation_succeeded": true,
+      "initialization_succeeded": true,
+      "doctor_succeeded": true,
+      "doctor_version": "2.1.0",
+      "outer_exit_status": 0
+    }
+  ],
+  "doctor_summary": {
+    "ok": true,
+    "platform": "Linux x86_64",
+    "python": "3.12.15",
+    "dependencies": "pass",
+    "data_paths": "writable",
+    "dashboard_port": "available on 127.0.0.1:8000",
+    "dashboard_security": "loopback only",
+    "provider": "not configured; expected warning before onboarding",
+    "identity": "not initialized; expected warning before onboarding"
+  },
+  "notes": [
+    "Each attempt used a new disposable container and a new HOME directory.",
+    "The installer was downloaded from public main; source installation was pinned to the exact merge commit.",
+    "No repository checkout, local wheel, identity state, or IdentityOS credential was present."
+  ]
+}
