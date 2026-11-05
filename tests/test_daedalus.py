@@ -611,7 +611,10 @@ def test_workflow_supplies_authoritative_pr_evidence():
     assert "review-inconclusive" in workflow
     assert "checks: read" in workflow
     assert "needs: await-checks" in workflow
-    assert "Independent checks did not finish within 20 minutes" in workflow
+    assert "const requiredNames = new Set(['benchmark']);" in workflow
+    assert "missing.length === 0 && pending.length === 0" in workflow
+    assert "Required independent checks did not finish within 60 minutes" in workflow
+    assert "timeout-minutes: 65" in workflow
     assert "concurrency:" in workflow
     assert workflow.count("const latestByName = new Map();") == 2
     assert ".filter(run => !['await-checks', 'review'].includes(run.name))" in workflow
