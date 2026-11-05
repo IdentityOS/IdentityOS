@@ -136,6 +136,27 @@ class CapabilityRegistry:
                 prompts.extend(cap.prompts(identity_id))
         return prompts
 
+    def prompts_for_skills(
+        self, identity_id: str, skill_names: set[str] | list[str] | tuple[str, ...]
+    ) -> list[str]:
+        """Return prompts only for capabilities represented in a tool catalog.
+
+        Capability prompts can be substantially larger than their tool schemas.
+        Once the runtime has relevance-bounded the offered tools, injecting prompts
+        for every installed capability defeats that bound and penalizes identities
+        as they acquire more abilities.
+        """
+        selected = set(skill_names)
+        prompts: list[str] = []
+        for cap in self.list(identity_id):
+            offered = [skill for skill in cap.skills() if skill.name in selected]
+            if offered and (
+                current_channel.get() is None
+                or any(authorize_skill(skill.name)[0] for skill in offered)
+            ):
+                prompts.extend(cap.prompts(identity_id))
+        return prompts
+
     def all_skills(self, identity_id: str) -> list[Skill]:
         skills: list[Skill] = []
         for cap in self.list(identity_id):

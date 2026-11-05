@@ -65,6 +65,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     engine = IdentityBench(
         identity_id=args.identity,
         storage_path=args.storage_dir,
+        request_timeout_seconds=args.request_timeout,
     )
     engine.load_identity()
     world_classes = DEFAULT_WORLDS if args.mode == "full" else SMOKE_WORLDS
@@ -673,6 +674,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--mode", choices=["full", "smoke"], default="full", help="Benchmark mode")
     p_run.add_argument("--worlds", nargs="*", help="Specific worlds to run")
     p_run.add_argument("--seed", type=int, default=42, help="RNG seed for determinism")
+    p_run.add_argument(
+        "--request-timeout", type=float, default=None, metavar="SECONDS",
+        help="Total generation budget per interaction, including tool rounds",
+    )
     p_run.set_defaults(func=cmd_run)
 
     p_report = sub.add_parser("report", help="Generate benchmark report")

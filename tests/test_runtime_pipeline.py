@@ -66,6 +66,34 @@ class TestToolResultBoundary:
     def test_runtime_sanitizes_tool_catalog_limit(self):
         assert IdentityRuntime(max_tools_per_request=0).max_tools_per_request == 1
 
+    def test_runtime_passes_total_generation_budget_to_adapter(self, tmp_path):
+        class RecordingAdapter:
+            model = "budget-test"
+
+            def __init__(self):
+                self.kwargs = {}
+
+            def generate(self, context, user_input, identity, **kwargs):
+                self.kwargs = kwargs
+                return "bounded"
+
+        adapter = RecordingAdapter()
+        runtime = IdentityRuntime(
+            storage=JSONFileBackend(root_dir=str(tmp_path / "store")),
+            adapter=adapter,
+            generation_budget_seconds=7.5,
+        )
+        identity = create_identity("Budget Bot", identity_id="budget-bot")
+        runtime.register(identity)
+
+        runtime.process(InteractionRequest(
+            identity_id=identity.id,
+            user_input="hello",
+            session_id=runtime.start_session(identity.id),
+        ))
+
+        assert adapter.kwargs["_generation_budget"] == 7.5
+
     def test_runtime_resolves_dotted_alias_only_for_an_offered_tool(self, tmp_path):
         class DottedToolAdapter:
             model = "dotted-tool-test"

@@ -31,9 +31,32 @@ silently consume the next model request. The defaults can be tuned explicitly:
 IDENTITYBENCH_CONTEXT_TOKENS=1200 \
 IDENTITYBENCH_RESPONSE_TOKENS=256 \
 IDENTITYBENCH_TOOL_RESULT_CHARS=1200 \
+IDENTITYBENCH_REQUEST_TIMEOUT_SECONDS=30 \
 IDENTITYBENCH_REQUEST_INTERVAL_SECONDS=35 \
 identitybench run benchmark-bot --mode smoke
 ```
+
+For a local Ollama run, use a total interaction deadline rather than relying on
+the HTTP timeout of each individual tool round:
+
+```bash
+IDENTITY_ADAPTER=ollama \
+IDENTITY_ADAPTER_CONFIG='{"model":"qwen3:4b","temperature":0,"max_tokens":192}' \
+identitybench run benchmark-bot --mode smoke --request-timeout 30
+```
+
+Ollama tool support is detected from its `/api/show` model metadata. Models that
+advertise `tools` use native structured calls; other models receive a compact
+text protocol. Set `OLLAMA_PREFER_LEGACY_TOOLS=1` only to diagnose or work around
+a model-specific native parser problem. The runtime relevance-bounds both tool
+schemas and their capability prompts, so installing more capabilities does not
+make every unrelated interaction progressively slower.
+
+The request timeout is a caller-visible wall-clock deadline, not only an HTTP
+inactivity timeout. It includes lazy client setup, Ollama capability detection,
+provider retries, and all tool rounds. When the deadline expires, IdentityOS
+returns control immediately, detaches the timed-out client, and refuses to run
+tool callbacks from a response that arrives after the deadline.
 
 The request interval defaults to zero for providers without a benchmark-specific
 policy and to 35 seconds for Groq, where a single interaction may require more

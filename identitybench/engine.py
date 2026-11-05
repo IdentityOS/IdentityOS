@@ -69,6 +69,7 @@ class IdentityBench:
         storage: Optional[BenchmarkStorage] = None,
         runtime: Optional[IdentityRuntime] = None,
         storage_path: str = ".identitybench",
+        request_timeout_seconds: Optional[float] = None,
     ):
         self.identity_id = identity_id
         self.storage = storage or BenchmarkStorage(storage_path)
@@ -83,6 +84,10 @@ class IdentityBench:
         self._tool_result_chars = 1200
         self._tools_per_request = 3
         self._tool_rounds = 1
+        self._request_timeout_seconds = (
+            max(0.1, float(request_timeout_seconds))
+            if request_timeout_seconds is not None else None
+        )
         self._cooldown_wait_seconds = 30.0
 
     def load_identity(self, identity_id: Optional[str] = None) -> None:
@@ -109,12 +114,16 @@ class IdentityBench:
             self._cooldown_wait_seconds = max(
                 0.0, float(os.environ.get("IDENTITYBENCH_COOLDOWN_WAIT_SECONDS", "30"))
             )
+            configured_timeout = os.environ.get("IDENTITYBENCH_REQUEST_TIMEOUT_SECONDS")
+            if configured_timeout:
+                self._request_timeout_seconds = max(0.1, float(configured_timeout))
             self.runtime = IdentityRuntime(
                 storage=storage_backend,
                 adapter=adapter,
                 max_context_tokens=self._context_tokens,
                 max_tool_result_chars=self._tool_result_chars,
                 max_tools_per_request=self._tools_per_request,
+                generation_budget_seconds=self._request_timeout_seconds,
             )
             leaves = adapter.adapters if isinstance(adapter, ChainAdapter) else (adapter,)
             for leaf in leaves:
@@ -268,6 +277,7 @@ class IdentityBench:
             "tools_per_request": self._tools_per_request,
             "tool_rounds": self._tool_rounds,
             "cooldown_wait_seconds": self._cooldown_wait_seconds,
+            "request_timeout_seconds": self._request_timeout_seconds,
             "suite_fingerprint": current_suite_fingerprint,
             "evaluator_digest": os.environ.get(
                 "IDENTITYBENCH_EVALUATOR_DIGEST", current_suite_fingerprint

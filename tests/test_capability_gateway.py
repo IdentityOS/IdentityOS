@@ -99,6 +99,20 @@ def test_tool_catalog_limits_schemas_by_query_relevance(tmp_path):
     }
 
 
+def test_capability_prompts_follow_the_relevance_bounded_tool_catalog(tmp_path):
+    registry = _registry(tmp_path)
+    registry.install("tester", "github")
+    registry.install("tester", "datetime")
+
+    _, mapping = registry.tool_catalog(
+        "tester", query="What time is it in UTC?", limit=1
+    )
+    prompts = registry.prompts_for_skills("tester", set(mapping.values()))
+
+    assert set(mapping.values()) == {"datetime.now"}
+    assert prompts == registry.get("tester", "datetime").prompts("tester")
+
+
 def test_required_null_remains_an_invalid_parameter(tmp_path):
     import core.capabilities.command_exec  # noqa: F401
 

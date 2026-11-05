@@ -10,6 +10,7 @@ import time as _time
 from typing import Any, Optional
 
 from .base import BaseAdapter
+from .deadline import require_time_remaining, run_with_wall_clock_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +186,7 @@ def _legacy_tool_context(
         name = function.get("name", "")
         description = function.get("description", "")
         schema = json.dumps(
-            function.get("parameters", {"type": "object"}),
+            _compact_tool_schema(function.get("parameters", {"type": "object"})),
             separators=(",", ":"),
             sort_keys=True,
         )
@@ -194,6 +195,30 @@ def _legacy_tool_context(
             f"- {name}: {description}\n  call template: {template}\n  argument schema: {schema}"
         )
     return context + "\n\n" + "\n".join(lines)
+
+
+def _compact_tool_schema(schema: Any) -> Any:
+    """Keep the constraints a small model needs without repeating prose metadata."""
+    if not isinstance(schema, dict):
+        return schema
+    retained = {}
+    for key in (
+        "type", "required", "enum", "const", "default", "minimum", "maximum",
+        "minLength", "maxLength", "minItems", "maxItems", "additionalProperties",
+    ):
+        if key in schema:
+            retained[key] = schema[key]
+    if isinstance(schema.get("properties"), dict):
+        retained["properties"] = {
+            name: _compact_tool_schema(value)
+            for name, value in schema["properties"].items()
+        }
+    if "items" in schema:
+        retained["items"] = _compact_tool_schema(schema["items"])
+    for key in ("anyOf", "oneOf"):
+        if isinstance(schema.get(key), list):
+            retained[key] = [_compact_tool_schema(item) for item in schema[key]]
+    return retained
 
 
 def _select_relevant_tools(
@@ -435,12 +460,49 @@ class OpenAIAdapter(BaseAdapter):
                 raise ImportError("openai package not found. Install with: pip install openai")
         return self._client
 
+    def _abort_active_client(self) -> None:
+        """Detach and close a timed-out client without delaying the caller."""
+        client = self._client
+        self._client = None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                logger.debug("Timed-out provider client did not close cleanly", exc_info=True)
+
     @property
     def structured_output(self):
         value = self.config.get("structured_output", "prompt_only")
         return value if value in {"prompt_only", "json_object", "json_schema"} else "prompt_only"
 
     def generate(
+        self,
+        context: str,
+        user_input: str,
+        identity: Any,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        retries: int = 3,
+        **kwargs
+    ) -> str:
+        budget = kwargs.get("_generation_budget")
+        if budget is None:
+            return self._generate(
+                context, user_input, identity,
+                temperature=temperature, max_tokens=max_tokens,
+                retries=retries, **kwargs,
+            )
+        return run_with_wall_clock_deadline(
+            lambda: self._generate(
+                context, user_input, identity,
+                temperature=temperature, max_tokens=max_tokens,
+                retries=retries, **kwargs,
+            ),
+            float(budget),
+            on_timeout=self._abort_active_client,
+        )
+
+    def _generate(
         self,
         context: str,
         user_input: str,
@@ -614,6 +676,7 @@ class OpenAIAdapter(BaseAdapter):
                         continue
                     recovered_tool = None
                     if execute_tool and tool_rounds < self.max_tool_rounds:
+                        require_time_remaining(deadline)
                         recovered_tool = self._recover_rejected_tool_call(
                             msg, messages, execute_tool
                         )
@@ -684,6 +747,7 @@ class OpenAIAdapter(BaseAdapter):
                 messages.append(assistant_msg)
 
                 for tool_call in message.tool_calls:
+                    require_time_remaining(deadline)
                     func_name = tool_call.function.name
                     try:
                         func_args = json.loads(tool_call.function.arguments)
@@ -932,22 +996,19 @@ def ollama_model_capabilities(
 
     host = _ollama_host_from_base_url(base_url)
     try:
-        with urllib.request.urlopen(f"{host}/api/tags", timeout=timeout) as resp:
+        request = urllib.request.Request(
+            f"{host}/api/show",
+            data=json.dumps({"model": model}).encode("utf-8"),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
         return set()
-
-    models = payload.get("models", [])
-    resolved = resolve_ollama_model(
-        model,
-        [entry.get("name", "") for entry in models if entry.get("name")],
-    )
-    entry = next((item for item in models if item.get("name") == resolved), None)
-    if entry is None:
-        return set()
     return {
         str(capability)
-        for capability in entry.get("capabilities", [])
+        for capability in payload.get("capabilities", [])
         if capability
     }
 
@@ -1050,10 +1111,8 @@ class OllamaAdapter(OpenAIAdapter):
         self.think = think
         self._supports_native_tools: Optional[bool] = None
         if prefer_legacy_tools is None:
-            configured = os.environ.get("OLLAMA_PREFER_LEGACY_TOOLS", "1")
-            prefer_legacy_tools = configured.strip().lower() not in {
-                "0", "false", "no", "off",
-            }
+            configured = os.environ.get("OLLAMA_PREFER_LEGACY_TOOLS", "auto").strip().lower()
+            prefer_legacy_tools = configured in {"1", "true", "yes", "on", "legacy"}
         self.prefer_legacy_tools = bool(prefer_legacy_tools)
 
     def _native_tools_supported(self) -> bool:
@@ -1076,8 +1135,43 @@ class OllamaAdapter(OpenAIAdapter):
         think: Optional[bool] = None,
         **kwargs
     ) -> str:
+        budget = kwargs.get("_generation_budget")
+        if budget is None:
+            return self._generate_ollama(
+                context, user_input, identity, think=think, **kwargs
+            )
+        return run_with_wall_clock_deadline(
+            lambda: self._generate_ollama(
+                context, user_input, identity, think=think, **kwargs
+            ),
+            float(budget),
+            on_timeout=self._abort_active_client,
+        )
+
+    def _generate_ollama(
+        self,
+        context: str,
+        user_input: str,
+        identity: Any,
+        think: Optional[bool] = None,
+        **kwargs
+    ) -> str:
         execute_tool = kwargs.pop("execute_tool", None)
         tools = kwargs.pop("tools", None) or []
+        budget = kwargs.pop("_generation_budget", None)
+        deadline = (
+            _time.monotonic() + max(0.1, float(budget))
+            if budget is not None else None
+        )
+
+        def bounded_kwargs() -> dict[str, Any]:
+            current = dict(kwargs)
+            if deadline is not None:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Ollama generation budget exhausted")
+                current["_generation_budget"] = remaining
+            return current
         # Ollama's OpenAI-compatible endpoint does not accept native tool
         # selection when tools themselves are handled by the legacy loop.
         kwargs.pop("tool_choice", None)
@@ -1094,7 +1188,7 @@ class OllamaAdapter(OpenAIAdapter):
                 execute_tool=execute_tool,
                 tool_choice="auto",
                 extra_body=extra,
-                **kwargs,
+                **bounded_kwargs(),
             )
             text_calls = _parse_all_known_text_tool_calls(output, tools)
             if not text_calls:
@@ -1102,6 +1196,7 @@ class OllamaAdapter(OpenAIAdapter):
             self._supports_native_tools = False
             evidence_blocks: list[str] = []
             for name, arguments in text_calls:
+                require_time_remaining(deadline)
                 try:
                     result = execute_tool(name, arguments)
                 except Exception as exc:
@@ -1119,7 +1214,7 @@ class OllamaAdapter(OpenAIAdapter):
                 "invent content or emit another text-form action.",
                 identity,
                 extra_body=extra,
-                **kwargs,
+                **bounded_kwargs(),
             )
 
         if execute_tool and tools:
@@ -1131,6 +1226,7 @@ class OllamaAdapter(OpenAIAdapter):
                 execute_tool,
                 tools=tools,
                 extra_body=extra,
+                deadline=deadline,
                 **kwargs,
             )
 
@@ -1139,7 +1235,7 @@ class OllamaAdapter(OpenAIAdapter):
             user_input,
             identity,
             extra_body=extra,
-            **kwargs,
+            **bounded_kwargs(),
         )
 
     def _legacy_tool_loop(
@@ -1151,16 +1247,23 @@ class OllamaAdapter(OpenAIAdapter):
         *,
         tools: list[dict[str, Any]],
         extra_body: dict[str, Any],
+        deadline: Optional[float] = None,
         **kwargs: Any,
     ) -> str:
         follow_up = user_input
         for tool_round in range(self.max_tool_rounds + 1):
+            request_kwargs = dict(kwargs)
+            if deadline is not None:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Ollama generation budget exhausted")
+                request_kwargs["_generation_budget"] = remaining
             text = super().generate(
                 context,
                 follow_up,
                 identity,
                 extra_body=extra_body,
-                **kwargs,
+                **request_kwargs,
             )
             calls = _parse_all_known_text_tool_calls(text, tools)
             if not calls:
@@ -1173,6 +1276,7 @@ class OllamaAdapter(OpenAIAdapter):
 
             evidence_blocks: list[str] = []
             for name, args in calls:
+                require_time_remaining(deadline)
                 try:
                     result = execute_tool(name, args)
                 except Exception as exc:

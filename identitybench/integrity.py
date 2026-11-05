@@ -37,6 +37,7 @@ _EQUIVALENT_CONFIG_FIELDS = (
     "tools_per_request",
     "tool_rounds",
     "cooldown_wait_seconds",
+    "request_timeout_seconds",
     "suite_fingerprint",
     "evaluator_digest",
     "protected_suite_digest",
