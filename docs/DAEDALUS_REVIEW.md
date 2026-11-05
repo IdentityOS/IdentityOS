@@ -34,6 +34,11 @@ does not prove the model's interpretation is correct. Model output can support a
 readiness downgrade only by naming an independent check that the recorded GitHub
 evidence shows actually failed.
 
+Advisory suggestions are normalized into a readable title, unverified model
+rationale, suggested change, and suggested verification. Structured model
+objects are never dumped directly into the review, and their self-described
+severity or evidence source does not change readiness.
+
 ## Actionable failure reports
 
 Every readiness blocker identifies the observed evidence, why it matters, the

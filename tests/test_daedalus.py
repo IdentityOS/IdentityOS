@@ -550,6 +550,27 @@ class TestReadiness:
         assert "Independent verification requested: Run the multi-file parser test." in rendered
         assert "Advisory model suggestions (not merge blockers)" in rendered
 
+    def test_structured_model_suggestion_is_readable_and_remains_unverified(self):
+        lines = render_ai_advisories({
+            "recommendations": [{
+                "title": "Add a parser regression",
+                "severity": "warning",
+                "evidence_source": "check",
+                "evidence_location": "static analysis",
+                "evidence": "No direct test was found.\nThis is a model interpretation.",
+                "required_change": "Add a focused test.",
+                "verification": "Run pytest.",
+            }],
+        })
+        rendered = "\n".join(lines)
+
+        assert "- **Add a parser regression**" in rendered
+        assert "Unverified model rationale: `static analysis`" in rendered
+        assert "Suggested change: Add a focused test." in rendered
+        assert "Suggested verification: Run pytest." in rendered
+        assert "{'title':" not in rendered
+        assert "\nThis is a model interpretation" not in rendered
+
     @pytest.mark.parametrize(
         "state",
         ["failure", "cancelled", "timed_out", "action_required", "startup_failure"],
