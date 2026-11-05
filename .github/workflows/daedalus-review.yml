@@ -23,6 +23,7 @@ jobs:
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
+    timeout-minutes: 65
     permissions:
       checks: read
       contents: read
@@ -33,10 +34,11 @@ jobs:
           script: |
             const terminal = new Set(['completed']);
             const ignoredNames = new Set(['await-checks', 'review']);
+            const requiredNames = new Set(['benchmark']);
             const sha = context.payload.pull_request.head.sha;
             // Let sibling workflows register their check runs before the first query.
             await new Promise(resolve => setTimeout(resolve, 10000));
-            for (let attempt = 1; attempt <= 120; attempt += 1) {
+            for (let attempt = 1; attempt <= 360; attempt += 1) {
               const response = await github.rest.checks.listForRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -53,17 +55,20 @@ jobs:
               const independent = [...latestByName.values()].filter(
                 run => !ignoredNames.has(run.name)
               );
+              const missing = [...requiredNames].filter(name => !latestByName.has(name));
               const pending = independent.filter(run => !terminal.has(run.status));
-              if (independent.length > 0 && pending.length === 0) {
+              if (missing.length === 0 && pending.length === 0) {
                 core.info(`Observed ${independent.length} completed independent checks.`);
                 return;
               }
               core.info(
-                `Waiting for independent checks (${pending.map(run => `${run.name}:${run.status}`).join(', ') || 'registration'}).`
+                `Waiting for independent checks (` +
+                `missing=${missing.join(',') || 'none'}; ` +
+                `pending=${pending.map(run => `${run.name}:${run.status}`).join(',') || 'none'}).`
               );
               await new Promise(resolve => setTimeout(resolve, 10000));
             }
-            core.setFailed('Independent checks did not finish within 20 minutes; Daedalus will not claim readiness.');
+            core.setFailed('Required independent checks did not finish within 60 minutes; Daedalus will not claim readiness.');
 
   review:
     needs: await-checks
