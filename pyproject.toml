@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "identityos"
-version = "2.0.0"
+version = "2.1.0"
 description = "Portable AI identity layer — persistent, composable AI identities for LLM applications."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -36,12 +36,13 @@ browser = ["playwright>=1.40.0"]
 dev = ["pytest>=7.4.0", "pytest-asyncio>=0.21.0", "playwright>=1.40.0"]
 
 [project.scripts]
+idos = "cli.idos:main"
 identity = "cli.main:main"
 identitybench = "identitybench.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/lacebx/IdentityOS"
-Repository = "https://github.com/lacebx/IdentityOS"
+Homepage = "https://github.com/IdentityOS/IdentityOS"
+Repository = "https://github.com/IdentityOS/IdentityOS"
 
 [tool.hatch.build]
 include = [

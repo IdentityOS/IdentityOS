@@ -1,0 +1,21 @@
+{
+  "schema_version": "identityos.installer.evidence.v1",
+  "run_id": "github-exact-ref-no-clone",
+  "commit": "d59c6fdc8e0fa5916f45d0874d313970e27d96b0",
+  "started_at": "2026-11-03T22:53:51Z",
+  "finished_at": "2026-11-03T22:55:23Z",
+  "base_image": "python:3.12-slim@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016",
+  "installer_sha256": "f2d90e93c086c46bb1b7aaf3342901483790ba9c242a5b9a0dc93641ff87cfce",
+  "installation_ms": 86696,
+  "total_through_doctor_ms": 92009,
+  "manual_clone_required": false,
+  "local_artifact_mounted": false,
+  "exact_public_commit_fetched": true,
+  "initialization_succeeded": true,
+  "doctor_succeeded": true,
+  "notes": [
+    "The clean container downloaded install.sh from raw.githubusercontent.com at the exact commit.",
+    "The installer downloaded the exact GitHub source archive and installed it into an isolated user environment.",
+    "Operating-system curl and CA certificates were installed before the monotonic IdentityOS timer began."
+  ]
+}

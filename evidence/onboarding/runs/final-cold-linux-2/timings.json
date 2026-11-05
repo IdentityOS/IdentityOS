@@ -1,0 +1,17 @@
+{
+  "clock": "time.monotonic_ns",
+  "finished_at": "2026-11-03T22:33:52.077Z",
+  "run_id": "final-cold-linux-2",
+  "schema_version": "identityos.onboarding.timings.v1",
+  "stages": {
+    "bootstrap_ms": 12005.435,
+    "inference_ms": null,
+    "installation_ms": 64051.48,
+    "launch_ms": 2956.585,
+    "onboarding_ms": 1789.132,
+    "portability_ms": null,
+    "restart_ms": null,
+    "total_ms": 88021.68
+  },
+  "started_at": "2026-11-03T22:32:24.056Z"
+}

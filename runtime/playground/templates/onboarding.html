@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="identityos-csrf" content="{{ csrf_token }}">
+  <title>Set up IdentityOS</title>
+  <link rel="stylesheet" href="/playground/static/onboarding.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="brand" aria-label="IdentityOS setup">
+      <span class="mark" aria-hidden="true">IO</span>
+      <div><strong>IdentityOS</strong><span>Local setup</span></div>
+    </header>
+
+    <section class="card" id="welcome-panel">
+      <p class="eyebrow">Your identity, on your machine</p>
+      <h1>Create an AI identity that persists.</h1>
+      <p class="lead">It can continue across conversations and supported models. Your identity data belongs to you; no IdentityOS account is required.</p>
+      <ul class="plain-list">
+        <li>Stored in your user-owned local data directory</li>
+        <li>Cloud context is sent only to the provider you choose</li>
+        <li>Consequential capabilities stay disabled until you configure them</li>
+      </ul>
+      <button class="primary" id="begin-button" type="button">Create my identity</button>
+    </section>
+
+    <section class="card hidden" id="identity-panel" aria-labelledby="identity-title">
+      <p class="step">Step 1 of 3</p>
+      <h1 id="identity-title">Name your identity</h1>
+      <p class="support">You can tune behavior later. A name is enough to begin.</p>
+      <form id="identity-form">
+        <label for="identity-name">Name</label>
+        <input id="identity-name" name="name" maxlength="80" autocomplete="off" required placeholder="Ada">
+        <label for="identity-purpose">Purpose <span>optional</span></label>
+        <textarea id="identity-purpose" name="purpose" maxlength="1000" rows="3" placeholder="A thoughtful research and building partner"></textarea>
+        <button class="primary" type="submit">Create identity</button>
+      </form>
+    </section>
+
+    <section class="card hidden" id="provider-panel" aria-labelledby="provider-title">
+      <p class="step">Step 2 of 3</p>
+      <h1 id="provider-title">Choose inference</h1>
+      <p class="support">Local providers keep inference on this machine. Cloud providers receive the relevant conversation context.</p>
+      <form id="provider-form">
+        <label for="provider-select">Provider</label>
+        <select id="provider-select" required></select>
+        <p class="provider-note" id="provider-note"></p>
+        <label for="provider-model">Model</label>
+        <input id="provider-model" required autocomplete="off">
+        <div id="base-url-row">
+          <label for="provider-base-url">Provider URL</label>
+          <input id="provider-base-url" type="url" autocomplete="off">
+        </div>
+        <div id="api-key-row">
+          <label for="provider-api-key">API key</label>
+          <input id="provider-api-key" type="password" autocomplete="new-password" spellcheck="false">
+          <p class="field-note">Saved in a private local secret file. It is never included in identity exports.</p>
+        </div>
+        <button class="primary" type="submit">Save and continue</button>
+      </form>
+    </section>
+
+    <section class="card hidden" id="verification-panel" aria-labelledby="verification-title">
+      <p class="step">Step 3 of 3</p>
+      <h1 id="verification-title">Verify the real connection</h1>
+      <p class="support">IdentityOS will make one genuine inference request. Saving settings alone does not mark the identity ready.</p>
+      <button class="primary" id="verify-button" type="button">Run verification</button>
+      <div class="verification-result hidden" id="verification-result" role="status"></div>
+      <button class="secondary hidden" id="retry-provider-button" type="button">Review provider settings</button>
+    </section>
+
+    <section class="card conversation hidden" id="conversation-panel" aria-labelledby="conversation-title">
+      <div class="conversation-head">
+        <div><p class="eyebrow success">Verified inference</p><h1 id="conversation-title">Start a conversation</h1></div>
+        <button class="secondary compact" id="change-provider-button" type="button">Change provider</button>
+      </div>
+      <div class="messages" id="messages" aria-live="polite"></div>
+      <form id="chat-form" class="chat-form">
+        <label class="sr-only" for="chat-message">Message</label>
+        <textarea id="chat-message" rows="2" maxlength="20000" required placeholder="Say hello…"></textarea>
+        <button class="primary" type="submit">Send</button>
+      </form>
+      <p class="provenance" id="last-provenance"></p>
+      <a class="advanced" href="/playground">Open the advanced runtime playground →</a>
+    </section>
+
+    <div class="notice hidden" id="notice" role="alert"></div>
+    <footer><span id="storage-location"></span><a href="/docs" target="_blank" rel="noreferrer">API docs</a></footer>
+  </main>
+  <script src="/playground/static/onboarding.js" defer></script>
+</body>
+</html>

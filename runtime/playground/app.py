@@ -10,32 +10,49 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
+import hashlib
 import json
+import os
 import queue
+import secrets
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
-from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-import os
-
-from runtime.orchestrator import IdentityRuntime, InteractionRequest, SessionMode
-from runtime.persistence import JSONFileBackend
-from runtime.event_bus import EventType, Event
 from core.cognitive_engine import ComposedContext
-from core.identity import create_identity, IdentitySpec
 from core.evaluation import register_default_criteria
 from core.goals import Goal, GoalPriority, GoalScope
+from core.identity import IdentitySpec, create_identity
 from core.intentions import Intention, IntentionPriority
-
-import datetime as _dt
+from identityos.adoption import (
+    AdoptionConfigError,
+    build_configured_adapter,
+    configure_provider,
+    list_providers,
+    load_config,
+    public_status,
+    record_verification,
+    save_config,
+)
+from identityos.adoption import initialize as initialize_adoption
+from identityos.paths import get_paths
+from runtime.event_bus import Event, EventType
+from runtime.orchestrator import IdentityRuntime, InteractionRequest, SessionMode
+from runtime.persistence import JSONFileBackend
 
 HERE = str(Path(__file__).parent)
+
+
+def _safe_error(code: str, message: str, *, status_code: int = 400) -> JSONResponse:
+    """Return an actionable error without reflecting exception or credential text."""
+    return JSONResponse({"error": code, "message": message}, status_code=status_code)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -99,13 +116,14 @@ def _capture_pipeline_events(
     runtime: IdentityRuntime,
     request: InteractionRequest,
     on_event: Optional[Callable[[PipelineEvent], None]] = None,
-) -> tuple[List[PipelineEvent], Optional[str], Optional[ComposedContext]]:
+) -> tuple[List[PipelineEvent], Optional[str], Optional[ComposedContext], dict]:
     """Run process() and capture all EventBus events as PipelineEvents."""
     events_queue: queue.Queue[Event] = queue.Queue()
     done_event = threading.Event()
     captured: List[PipelineEvent] = []
     output: Optional[str] = None
     context_used: Optional[ComposedContext] = None
+    response_metadata: dict = {}
 
     def handler(event: Event) -> None:
         events_queue.put(event)
@@ -113,11 +131,12 @@ def _capture_pipeline_events(
     runtime.event_bus.subscribe_all(handler)
 
     def run() -> None:
-        nonlocal output, context_used
+        nonlocal output, context_used, response_metadata
         try:
             resp = runtime.process(request)
             output = resp.output
             context_used = resp.context_used
+            response_metadata = dict(resp.metadata or {})
         except Exception as e:
             output = f"[Runtime Error] {e}"
         finally:
@@ -197,8 +216,8 @@ def _capture_pipeline_events(
             for pe in captured:
                 if pe.stage == "memory":
                     pe.data["memory_retrieved"] = True
-                    mem_lines = [l.strip() for l in mem_block.split('\n') if l.strip()]
-                    pe.data["memory_block_snippets"] = [l[:80] for l in mem_lines[:5]]
+                    mem_lines = [line.strip() for line in mem_block.split('\n') if line.strip()]
+                    pe.data["memory_block_snippets"] = [line[:80] for line in mem_lines[:5]]
 
     # Add synthetic stages with runtime data
     identity_id = request.identity_id
@@ -233,7 +252,7 @@ def _capture_pipeline_events(
         if on_event:
             on_event(response_event)
 
-    return captured, output, context_used
+    return captured, output, context_used, response_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -244,9 +263,11 @@ class RuntimeManager:
     """Manages a single IdentityRuntime instance per identity."""
 
     def __init__(self):
+        self._paths = get_paths()
+        initialize_adoption(self._paths)
         self._runtime: Optional[IdentityRuntime] = None
         self._sessions: Dict[str, str] = {}
-        self._storage = JSONFileBackend(root_dir=os.environ.get("IDENTITY_STORE_PATH", ".identity_store"))
+        self._storage = JSONFileBackend(root_dir=str(self._paths.identity_store))
 
         # Read adapter config from env vars (same convention as runtime/main.py)
         self._adapter_name: Optional[str] = os.environ.get("IDENTITY_ADAPTER") or None
@@ -264,14 +285,24 @@ class RuntimeManager:
     def get_or_create_runtime(self) -> IdentityRuntime:
         if self._runtime is not None:
             return self._runtime
-        rt = IdentityRuntime(storage=self._storage)
+        adapter = None
+        try:
+            config = load_config(self._paths)
+            if config.provider:
+                adapter = build_configured_adapter(self._paths)
+        except AdoptionConfigError:
+            adapter = None
+        rt = IdentityRuntime(storage=self._storage, adapter=adapter)
         register_default_criteria(rt.evaluation_engine)
         rt.load_persisted()
         self._runtime = rt
         return rt
 
     def restart(self) -> None:
+        if self._runtime is not None:
+            self._runtime.shutdown()
         self._runtime = None
+        self._sessions.clear()
         self.get_or_create_runtime()
 
     def get_runtime(self) -> IdentityRuntime:
@@ -320,9 +351,145 @@ class RuntimeManager:
                 if model:
                     kwargs["model"] = model
                 rt.adapter = get_adapter(self._adapter_name, **kwargs)
-            except Exception as exc:
+            except Exception:
                 import sys
-                print(f"[playground] adapter config failed: {exc}", file=sys.stderr)
+                print("[playground] adapter configuration failed", file=sys.stderr)
+
+    def create_onboarding_identity(self, name: str, purpose: str = "") -> IdentitySpec:
+        clean_name = str(name or "").strip()
+        if not clean_name or len(clean_name) > 80 or any(ch in clean_name for ch in "\r\n\x00"):
+            raise ValueError("Name must be 1 to 80 characters on one line")
+        if any(spec.name.casefold() == clean_name.casefold() for spec in self.get_runtime().identity_store.list_all()):
+            raise ValueError("An identity with that name already exists")
+        clean_purpose = str(purpose or "").strip()
+        if len(clean_purpose) > 1000:
+            raise ValueError("Purpose must be 1000 characters or fewer")
+        spec = self.create_identity(name=clean_name, persona=clean_purpose or "A helpful AI identity")
+        config = load_config(self._paths)
+        config.identity_id = spec.id
+        config.onboarding.update({"stage": "provider", "ready": False})
+        save_config(config, self._paths)
+        return spec
+
+    def configure_onboarding_provider(
+        self,
+        provider: str,
+        *,
+        model: str = "",
+        base_url: str = "",
+        api_key: str = "",
+    ) -> dict:
+        config = load_config(self._paths)
+        if not config.identity_id or not (
+            self.get_runtime().identity_store.get(config.identity_id)
+            or self.get_runtime().load(config.identity_id)
+        ):
+            raise ValueError("Create an identity before configuring a provider")
+        updated = configure_provider(
+            provider,
+            model=model or None,
+            base_url=base_url or None,
+            api_key=api_key or None,
+            paths=self._paths,
+        )
+        self.get_runtime().adapter = build_configured_adapter(self._paths)
+        public_provider = dict(public_status(self._paths).get("provider") or {})
+        return {
+            "configured": True,
+            "provider": public_provider,
+            "next_stage": updated.onboarding.get("stage", "verification"),
+        }
+
+    @staticmethod
+    def _public_provenance(value: dict) -> dict:
+        return {
+            "generation_mode": str(value.get("generation_mode", "")),
+            "provider": str(value.get("provider", "")),
+            "model": str(value.get("model", "")),
+            "latency_ms": value.get("latency_ms"),
+        }
+
+    def run_onboarding_inference(self, prompt: str, *, record_ready: bool) -> dict:
+        config = load_config(self._paths)
+        identity_id = config.identity_id or ""
+        clean_prompt = str(prompt or "").strip()
+        if not identity_id:
+            return {"ready": False, "error": "identity_required", "message": "Create an identity first."}
+        if not clean_prompt or len(clean_prompt) > 20_000:
+            return {
+                "ready": False,
+                "error": "invalid_prompt",
+                "message": "Enter a message between 1 and 20,000 characters.",
+            }
+        rt = self.get_runtime()
+        identity = rt.identity_store.get(identity_id) or rt.load(identity_id)
+        if identity is None:
+            return {
+                "ready": False,
+                "error": "identity_missing",
+                "message": "The configured identity could not be loaded.",
+            }
+        try:
+            rt.adapter = build_configured_adapter(self._paths)
+        except AdoptionConfigError:
+            return {
+                "ready": False,
+                "error": "provider_not_configured",
+                "message": "Choose a provider and check its credential before verification.",
+            }
+        session_id = self._sessions.get(identity_id)
+        if not session_id:
+            session_id = rt.start_session(identity_id)
+            self._sessions[identity_id] = session_id
+        # Connectivity verification must make one genuine provider request, not
+        # trigger unrelated capability-evolution work on the interactive path.
+        prometheus = rt.prometheus
+        if record_ready:
+            rt.prometheus = None
+        try:
+            response = rt.process(InteractionRequest(
+                identity_id=identity_id,
+                user_input=clean_prompt,
+                session_id=session_id,
+            ))
+        finally:
+            rt.prometheus = prometheus
+        provenance = dict(response.metadata.get("generation_provenance") or {})
+        public_provenance = self._public_provenance(provenance)
+        actual = (
+            public_provenance["generation_mode"] == "identity_model_generation"
+            and bool(public_provenance["provider"])
+            and bool(public_provenance["model"])
+            and bool(str(response.output or "").strip())
+            and not str(response.output).startswith((
+                "[No adapter configured", "[Generation unavailable", "[Runtime Error]",
+            ))
+        )
+        if not actual:
+            return {
+                "ready": False,
+                "error": "inference_not_verified",
+                "message": (
+                    "The provider did not produce a real model response. Check the API key, "
+                    "model name, network connection, local model availability, and provider limits."
+                ),
+                "provenance": public_provenance,
+            }
+        if record_ready:
+            digest = hashlib.sha256(str(response.output).encode("utf-8")).hexdigest()
+            record_verification(
+                identity_id=identity_id,
+                provenance=provenance,
+                response_digest=digest,
+                paths=self._paths,
+            )
+        return {
+            "ready": True,
+            "output": response.output,
+            "provenance": public_provenance,
+            "identity_id": identity_id,
+            "session": self.session_info(identity_id),
+        }
 
     def get_identity_data(self, identity_id: str) -> dict:
         rt = self.get_or_create_runtime()
@@ -415,7 +582,6 @@ class RuntimeManager:
         context_sections = []
         if spec:
             try:
-                from core.cognitive_engine import ComposedContext as CC
                 ctx = rt.context_composer.compose(
                     identity=spec,
                     memory_store=rt.memory_store,
@@ -459,7 +625,10 @@ class RuntimeManager:
 
         # Evolution metrics + identity mutation data
         evolution = {
-            "interaction_count": len([e for e in tl_events if e.get("event_type") in ("milestone", "creation")]) if tl_events else 0,
+            "interaction_count": (
+                len([event for event in tl_events if event.get("event_type") in ("milestone", "creation")])
+                if tl_events else 0
+            ),
             "memory_count": len(mem_dicts),
             "relationship_count": len(edge_dicts),
             "goal_count": len(goal_dicts),
@@ -522,6 +691,12 @@ class RuntimeManager:
         on_event: Optional[Callable[[PipelineEvent], None]] = None,
     ) -> dict:
         rt = self.get_or_create_runtime()
+        try:
+            adoption_config = load_config(self._paths)
+            if adoption_config.identity_id == identity_id and adoption_config.provider:
+                rt.adapter = build_configured_adapter(self._paths)
+        except AdoptionConfigError:
+            pass
         self._maybe_configure_adapter(rt)
 
         # Ensure identity is loaded
@@ -552,7 +727,9 @@ class RuntimeManager:
             user_input=user_input,
             session_id=session_id,
         )
-        events, output, context_used = _capture_pipeline_events(rt, request, on_event=on_event)
+        events, output, context_used, response_metadata = _capture_pipeline_events(
+            rt, request, on_event=on_event,
+        )
 
         context_text = ""
         context_sections = []
@@ -566,6 +743,9 @@ class RuntimeManager:
             "context": context_text or "",
             "context_sections": context_sections,
             "session": self.session_info(identity_id),
+            "generation_provenance": self._public_provenance(
+                dict(response_metadata.get("generation_provenance") or {})
+            ),
         }
 
     def session_info(self, identity_id: str) -> dict:
@@ -707,6 +887,9 @@ manager = RuntimeManager()
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="IdentityOS Playground")
+_CSRF_COOKIE = "identityos_csrf"
+_CSRF_HEADER = "x-identityos-csrf"
+_CSRF_TOKEN = secrets.token_urlsafe(32)
 
 _jinja_env = Environment(
     loader=FileSystemLoader(HERE + "/templates"),
@@ -714,6 +897,188 @@ _jinja_env = Environment(
 )
 
 app.mount("/playground/static", StaticFiles(directory=HERE + "/static"), name="playground_static")
+
+
+def _loopback_name(value: str) -> bool:
+    return value.lower().rstrip(".") in {"localhost", "127.0.0.1", "::1", "test", "testserver"}
+
+
+@app.middleware("http")
+async def secure_local_browser(request: Request, call_next):
+    """Reject remote-host and cross-origin browser requests before route handling."""
+    host = request.url.hostname or ""
+    if not _loopback_name(host):
+        return _safe_error(
+            "invalid_host",
+            "IdentityOS browser access is limited to this computer.",
+            status_code=400,
+        )
+
+    origin = request.headers.get("origin", "")
+    if origin:
+        from urllib.parse import urlparse
+
+        origin_url = urlparse(origin)
+        if origin_url.scheme not in {"http", "https"} or not _loopback_name(origin_url.hostname or ""):
+            return _safe_error(
+                "cross_origin_denied",
+                "Cross-origin browser requests are not allowed.",
+                status_code=403,
+            )
+
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path.startswith("/onboarding/api/"):
+        cookie_token = request.cookies.get(_CSRF_COOKIE, "")
+        header_token = request.headers.get(_CSRF_HEADER, "")
+        if not (
+            cookie_token
+            and header_token
+            and secrets.compare_digest(cookie_token, _CSRF_TOKEN)
+            and secrets.compare_digest(header_token, _CSRF_TOKEN)
+        ):
+            return _safe_error(
+                "csrf_failed",
+                "Refresh onboarding and try again.",
+                status_code=403,
+            )
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    )
+    if request.url.path.startswith("/onboarding"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/", include_in_schema=False)
+async def root_page():
+    return RedirectResponse("/onboarding", status_code=307)
+
+
+@app.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request):
+    template = _jinja_env.get_template("onboarding.html")
+    response = HTMLResponse(template.render(request=request, csrf_token=_CSRF_TOKEN))
+    response.set_cookie(
+        _CSRF_COOKIE,
+        _CSRF_TOKEN,
+        httponly=True,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+        path="/",
+    )
+    return response
+
+
+@app.get("/onboarding/api/state")
+async def onboarding_state():
+    state = public_status(manager._paths)
+    identity_id = state.get("identity_id")
+    identity = manager.get_runtime().identity_store.get(identity_id) if identity_id else None
+    state["identity"] = (
+        {"id": identity.id, "name": identity.name, "purpose": identity.persona}
+        if identity else None
+    )
+    return JSONResponse(state)
+
+
+@app.get("/onboarding/api/providers")
+async def onboarding_providers():
+    return JSONResponse({"providers": list_providers()})
+
+
+@app.get("/onboarding/api/history")
+async def onboarding_history():
+    config = load_config(manager._paths)
+    if not config.identity_id:
+        return JSONResponse({"messages": []})
+    runtime = manager.get_runtime()
+    messages: list[dict[str, str]] = []
+    for memory in runtime.memory_store.by_identity(config.identity_id)[-50:]:
+        if "interaction" not in getattr(memory, "tags", []):
+            continue
+        content = str(getattr(memory, "content", ""))
+        if content.startswith("User: ") and "\nAssistant: " in content:
+            user_text, assistant_text = content[6:].split("\nAssistant: ", 1)
+            messages.extend((
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": assistant_text},
+            ))
+    return JSONResponse({"messages": messages})
+
+
+@app.post("/onboarding/api/identity")
+async def onboarding_create_identity(body: dict):
+    try:
+        spec = manager.create_onboarding_identity(
+            str(body.get("name", "")),
+            str(body.get("purpose", "")),
+        )
+    except ValueError as exc:
+        return _safe_error("invalid_identity", str(exc), status_code=400)
+    return JSONResponse({
+        "created": True,
+        "identity": {"id": spec.id, "name": spec.name, "purpose": spec.persona},
+        "next_stage": "provider",
+    })
+
+
+@app.post("/onboarding/api/provider")
+async def onboarding_configure_provider(body: dict):
+    try:
+        result = manager.configure_onboarding_provider(
+            str(body.get("provider", "")),
+            model=str(body.get("model", "")),
+            base_url=str(body.get("base_url", "")),
+            api_key=str(body.get("api_key", "")),
+        )
+    except (AdoptionConfigError, ValueError):
+        return _safe_error(
+            "provider_configuration_failed",
+            "The provider could not be configured. Check the credential, model, and provider URL.",
+            status_code=400,
+        )
+    return JSONResponse(result)
+
+
+@app.post("/onboarding/api/verify")
+async def onboarding_verify(body: dict):
+    prompt = str(body.get("prompt") or "Reply with one short sentence confirming that inference is working.")
+    try:
+        result = manager.run_onboarding_inference(prompt, record_ready=True)
+    except Exception:
+        result = {
+            "ready": False,
+            "error": "inference_failed",
+            "message": "Inference failed. Check the provider, credential, model, and network connection.",
+        }
+    return JSONResponse(result, status_code=200 if result.get("ready") else 422)
+
+
+@app.post("/onboarding/api/chat")
+async def onboarding_chat(body: dict):
+    status = public_status(manager._paths)
+    if not status.get("onboarding", {}).get("ready"):
+        return _safe_error(
+            "verification_required",
+            "Verify the provider before starting the conversation.",
+            status_code=409,
+        )
+    try:
+        result = manager.run_onboarding_inference(str(body.get("message", "")), record_ready=False)
+    except Exception:
+        result = {
+            "ready": False,
+            "error": "inference_failed",
+            "message": "The provider could not generate a response. Check its status and try again.",
+        }
+    return JSONResponse(result, status_code=200 if result.get("ready") else 422)
 
 
 @app.get("/playground", response_class=HTMLResponse)
@@ -920,40 +1285,31 @@ async def api_export(identity_id: str):
 
 @app.post("/playground/api/configure-adapter")
 async def api_configure_adapter(body: dict):
-    adapter_type = body.get("adapter", "")
+    adapter_type = str(body.get("adapter", ""))
     if not adapter_type:
         return JSONResponse({"error": "adapter type is required"}, status_code=400)
-
-    model = body.get("model") or ""
-    manager._adapter_name = adapter_type
-    manager._adapter_model = model
-    manager._adapter_kwargs = {
-        k: v for k, v in body.items()
-        if k in ("api_key", "base_url", "organization", "temperature", "max_tokens", "model")
-        and v is not None
-    }
-    # Ensure model is always set
-    if model and "model" not in manager._adapter_kwargs:
-        manager._adapter_kwargs["model"] = model
-
-    rt = manager.get_or_create_runtime()
-    rt.adapter = None
-    manager._maybe_configure_adapter(rt)
-
-    configured = rt.adapter is not None
-    actual_model = getattr(rt.adapter, "model", None) if rt.adapter else model or "default"
-    msg = "ok"
-    if not configured:
-        msg = (
-            f"Adapter '{adapter_type}' created but may fail at runtime. "
-            "Set the corresponding env var (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, "
-            "OPENROUTER_API_KEY) or pass api_key explicitly."
+    try:
+        config = configure_provider(
+            adapter_type,
+            model=str(body.get("model") or "") or None,
+            base_url=str(body.get("base_url") or "") or None,
+            api_key=str(body.get("api_key") or "") or None,
+            paths=manager._paths,
         )
+        manager.get_runtime().adapter = build_configured_adapter(manager._paths)
+    except AdoptionConfigError:
+        return _safe_error(
+            "provider_configuration_failed",
+            "The adapter could not be configured. Check the credential, model, and provider URL.",
+            status_code=400,
+        )
+    provider = dict(public_status(manager._paths).get("provider") or {})
     return JSONResponse({
-        "configured": configured,
-        "adapter": adapter_type,
-        "model": actual_model,
-        "message": msg,
+        "configured": True,
+        "adapter": provider.get("name", adapter_type),
+        "model": provider.get("model", ""),
+        "message": "Configuration saved. Run verification before treating the provider as ready.",
+        "ready": bool(config.onboarding.get("ready")),
     })
 
 

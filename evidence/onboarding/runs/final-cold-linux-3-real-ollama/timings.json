@@ -1,0 +1,17 @@
+{
+  "clock": "time.monotonic_ns",
+  "finished_at": "2026-11-03T22:38:49.384Z",
+  "run_id": "final-cold-linux-3-real-ollama",
+  "schema_version": "identityos.onboarding.timings.v1",
+  "stages": {
+    "bootstrap_ms": 12817.098,
+    "inference_ms": 104485.842,
+    "installation_ms": 71590.171,
+    "launch_ms": 3212.587,
+    "onboarding_ms": 1478.0,
+    "portability_ms": 2274.271,
+    "restart_ms": 76156.862,
+    "total_ms": 280027.906
+  },
+  "started_at": "2026-11-03T22:34:09.357Z"
+}

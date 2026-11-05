@@ -1,0 +1,7 @@
+# Verification runs are generated evidence, not source fixtures. Upload them as
+# CI artifacts or deliberately force-add reviewed, sanitized delivery evidence.
+runs/
+ci-*/
+
+# Keep this directory and its policy under version control.
+!.gitignore

@@ -1,0 +1,7 @@
+{
+  "blocked_reason": null,
+  "duration_ms": 2274.271,
+  "sanitized_output_sha256": "69c6ddb4a00ed1e36a32fb33cd011a37b3ca07bcd800cfafb2e50fd75c8cea9a",
+  "schema_version": "identityos.onboarding.portability.v1",
+  "verified": true
+}

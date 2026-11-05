@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Identity Runtime API",
     description="Portable AI identity layer — own your AI's soul, not just its prompt.",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 app.add_middleware(
@@ -253,7 +253,7 @@ async def enforce_api_access(request: Request, call_next):
 async def root():
     return {
         "service": "Identity Runtime",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
         "tagline": "Every AI deserves its own soul.",
     }

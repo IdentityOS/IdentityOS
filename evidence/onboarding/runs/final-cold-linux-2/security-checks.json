@@ -1,0 +1,9 @@
+{
+  "child_environment_secret_policy": "deny-by-default with explicit credential-env allowlist",
+  "credential_values_recorded": false,
+  "export_secret_canary_checked": false,
+  "logs_sanitized": true,
+  "loopback_binding_checked": false,
+  "schema_version": "identityos.onboarding.security.v1",
+  "shell_execution": false
+}

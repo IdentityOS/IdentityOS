@@ -1,0 +1,19 @@
+{
+  "blocked_reason": null,
+  "credential_values_recorded": false,
+  "generation_provenance": {
+    "generation_mode": "identity_model_generation",
+    "model": "llama3.2:1b",
+    "provider": "OllamaAdapter",
+    "provider_latency_ms": 101597,
+    "response_sha256": "6b9fa8cf650b894608cd41d846a6d4a9bdfc8f575bd7f92a18c597679efa5cd7"
+  },
+  "latency_ms": 104485.842,
+  "mode": "real",
+  "model": "llama3.2:1b",
+  "provider": "OllamaAdapter",
+  "real_inference_acceptance": true,
+  "sanitized_output_sha256": "90344e701d861e853c413aeae452d285974212ea113830901e0fbe64a438718a",
+  "schema_version": "identityos.onboarding.inference.v1",
+  "verified": true
+}

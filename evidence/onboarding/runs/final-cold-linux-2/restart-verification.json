@@ -1,0 +1,7 @@
+{
+  "blocked_reason": "No restart command was supplied for this run.",
+  "duration_ms": null,
+  "sanitized_output_sha256": null,
+  "schema_version": "identityos.onboarding.restart.v1",
+  "verified": false
+}

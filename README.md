@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/lacebx/IdentityOS/main/docs/identityos-banner.png" alt="IdentityOS" width="600"/>
+  <img src="https://raw.githubusercontent.com/IdentityOS/IdentityOS/main/docs/identityos-banner.png" alt="IdentityOS" width="600"/>
 </p>
 
 <h1 align="center">IdentityOS</h1>
@@ -7,15 +7,10 @@
 
 ---
 
-## What's New
-
-- **Live browser bridge** — identities drive your real Firefox through
-  `browser.live.*` skills (WebExtension + native messaging). Setup and usage:
-  `docs/live-browser-bridge.md`.
-- **Multiple OpenAI-compatible providers** — configure any number of endpoints
-  with `OPENAI_<NAME>_API_KEY` / `_BASE_URL` / `_MODEL`; discovered
-  side-effect-free at startup. Legacy `OPENAI_API_KEY` and `OLLAMA_API_KEY`
-  remain supported. Details: `docs/openai_providers.md`.
+> **Release reality:** the developer-first installer in this branch is verified
+> from built artifacts. It is not a public package claim until a release that
+> contains it is published. See [installation](docs/INSTALLATION.md) and the
+> [verification record](docs/adoption/VERIFICATION.md).
 
 ## Why IdentityOS Exists
 
@@ -72,86 +67,101 @@ evidence contracts. Examples include `datetime`, `filesystem`, and `github`.
 
 ## Quick Start
 
-### Prerequisites
+### 1. Install
 
-- Python 3.11+
-- An API key from any LLM provider (or a local model running on your machine)
+Prerequisites: Python 3.11 or newer with `venv`, and `curl`. Linux is the
+verified target. macOS and WSL2 are not yet independently verified.
 
-### One-time Setup
-
-```bash
-# Clone
-git clone https://github.com/lacebx/IdentityOS.git
-cd IdentityOS
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install IdentityOS
-pip install -e .
-
-# Configure your API key
-cp .env.example .env
-```
-
-### Configure Your LLM
-
-Edit `.env` and set at least one provider. Choose whichever works for you:
-
-**Cloud (fast, no local setup):**
-```
-GROQ_API_KEY="gsk_your_key_here"    # Free: https://console.groq.com
-```
-
-**Local (free, no API key needed, runs on your machine):**
-```
-OPENAI_BASE_URL="http://localhost:11434/v1"   # Ollama
-OPENAI_API_KEY="ollama"                       # Ollama accepts any key
-```
-
-IdentityOS works with cloud or local models through adapters. Pick what fits.
-
-### Create Your First Identity
+Once this installer is present on the public `main` branch, the no-clone path is:
 
 ```bash
-# Create an identity named "Gabriel"
-identity create --name "Gabriel" --persona messenger --id gabe
-
-# Chat with Gabriel
-identity chat --id gabe #Note: IF you have more than 1 adapter key in .env you get to chose adapter at start of each session, identity knows everything no matter what adapter you select
+curl -fsSL https://raw.githubusercontent.com/IdentityOS/IdentityOS/main/install.sh | bash
 ```
 
-Type a few messages. IdentityOS stores everything in `.identity_store/`.
+The installer creates an isolated user-owned environment. It does not modify
+system Python, use administrator privileges, download a model, start a service,
+or create an account. For a reproducible install, pin a tag or commit:
 
 ```bash
-# See what Gabriel knows about you
-identity inspect --id gabe --dashboard
+ref=<tag-or-full-commit-sha>
+curl -fsSL "https://raw.githubusercontent.com/IdentityOS/IdentityOS/$ref/install.sh" -o /tmp/identityos-install.sh
+bash /tmp/identityos-install.sh --ref "$ref"
 ```
+
+Before publication, build a wheel and use `bash install.sh --artifact
+/absolute/path/to/wheel`; label that result an unpublished-artifact test.
+
+### 2. Initialize and open onboarding
+
+```bash
+~/.local/bin/idos init
+~/.local/bin/idos start --open
+```
+
+The terminal prints the local URL if a browser cannot be opened. Onboarding
+guides you through a name, an inference provider, a real connectivity check,
+and the first conversation. No `.env` editing is required. Cloud credentials
+are saved in private local secret files and never in identity exports.
+
+Supported onboarding choices are derived from runtime adapters: Ollama, OpenAI,
+Anthropic, Groq, Google Gemini's OpenAI-compatible endpoint, OpenRouter,
+SambaNova, and Cerebras. Choosing a cloud provider means relevant conversation
+context is sent to that provider. Ollama stays local, but IdentityOS never
+silently downloads or launches a model.
+
+### 3. Stop, restart, and resume
+
+Press Ctrl+C to stop a foreground server, then restart it with the same command:
+
+```bash
+idos start --open
+```
+
+The selected identity and its conversation memory are loaded from durable
+storage. For an explicit background process:
+
+```bash
+idos start --detach --open
+idos status
+idos stop
+```
+
+### Diagnose, export, and import
+
+```bash
+idos doctor
+idos doctor --json
+idos export --identity <identity-id> --output my-identity.identityos.json
+idos import my-identity.identityos.json
+```
+
+Import validates the archive in a staging store, loads it in a fresh runtime,
+and only then commits it. Credentials, installation configuration, installed
+capability code, and machine permissions are excluded.
+
+### Data ownership
+
+Linux defaults:
+
+- Identity data: `~/.local/share/identityos/`
+- Configuration and private secrets: `~/.config/identityos/`
+- Logs and process state: `~/.local/state/identityos/`
+- Replaceable application environments: `~/.local/share/identityos-runtime/`
+
+`idos uninstall` removes managed application code but preserves identity data.
+Permanent removal requires `idos uninstall --purge-data --yes`.
+
+See [the complete installation and troubleshooting guide](docs/INSTALLATION.md).
 
 ---
 
-<!-- GIF: creating an identity and chatting with it -->
+## Advanced CLI and developer use
 
----
-
-## After Setup, try These
-
-### List Your Identities
+The existing `identity` command remains available for advanced runtime work:
 
 ```bash
 identity list
-```
-
-### Inspect an Identity
-
-```bash
-identity inspect --id gabe
-```
-
-### Checkpoint and Roll Back
-
-```bash
+identity inspect --id <identity-id>
 identity snapshot --id gabe --label "before-experiment"
 identity rollback --id gabe --snap <snapshot_id>
 ```
@@ -159,10 +169,11 @@ identity rollback --id gabe --snap <snapshot_id>
 ### Launch the Web Playground
 
 ```bash
-identity playground
+idos start --open
 ```
 
-Open http://localhost:8000/playground
+Onboarding opens at `http://127.0.0.1:8000/onboarding`. The advanced runtime
+view remains at `http://127.0.0.1:8000/playground`.
 
 See [docs/IDENTITY_CHAT.md](docs/IDENTITY_CHAT.md) for session modes, streaming,
 state panels, goal/intention controls, restart verification, and export.
@@ -254,47 +265,20 @@ ollama serve
 ```
 
 ```bash
-# In another terminal, configure IdentityOS
-export OPENAI_BASE_URL="http://localhost:11434/v1"
-export OPENAI_API_KEY="ollama"  # Ollama accepts any value
-
-identity create --name "LocalBot" --persona helpful
-identity chat --id localbot
+# Then choose Ollama and llama3.2 in browser onboarding.
+idos start --open
 ```
 
-**LM Studio:**
-```bash
-export OPENAI_BASE_URL="http://localhost:1234/v1"
-export OPENAI_API_KEY="not-needed"
-```
-
-**vLLM / llama.cpp / text-gen-webui:**
-```bash
-export OPENAI_BASE_URL="http://localhost:8000/v1"
-export OPENAI_API_KEY="not-needed"
-```
-
-**HuggingFace Inference Endpoints:**
-```bash
-export OPENAI_BASE_URL="https://api-inference.huggingface.co/models/your-model"
-export OPENAI_API_KEY="hf_your_key"
-```
+Other OpenAI-compatible endpoints remain available through the advanced adapter
+configuration described in [docs/openai_providers.md](docs/openai_providers.md).
 
 ---
 
 ## Using Cloud Providers
 
-Set the corresponding environment variable in `.env`:
-
-| Provider | Env Variable | Default Model |
-|----------|-------------|---------------|
-| Groq | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
-| Anthropic | `ANTHROPIC_API_KEY` | `claude-3-opus-20240229` |
-| OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-4o` |
-| SambaNova | `SAMBANOVA_API_KEY` | `DeepSeek-V3.1` |
-
-Set a custom model: `IDENTITY_MODEL="gpt-4o-mini"` in `.env`
+Choose the provider in browser onboarding and enter its key there. The key is
+never placed in a browser URL, frontend bundle, identity state, or export. The
+provider is not marked ready until a genuine inference request succeeds.
 
 ---
 

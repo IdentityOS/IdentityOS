@@ -1,0 +1,12 @@
+{
+  "command_count": 10,
+  "evidence_directory": "/evidence/final-cold-linux-3-real-ollama",
+  "failure_count": 0,
+  "inference_mode": "real",
+  "publication_status": "unpublished",
+  "real_inference_verified": true,
+  "run_id": "final-cold-linux-3-real-ollama",
+  "schema_version": "identityos.onboarding.run.v1",
+  "success": true,
+  "unpublished_artifact_test": true
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": "identityos.onboarding.aggregate.v1",
+  "date": "2026-11-03",
+  "baseline_commit": "394bc8c7cb09ffb282b2c1a7532761e63e7ee244",
+  "artifact": {
+    "filename": "identityos-2.1.0-py3-none-any.whl",
+    "publication_status": "unpublished",
+    "sha256": "fa6c2d2e41c1ad822b5877d26a64104a57ff8aa1e17458a3aaa18ba10da02c14"
+  },
+  "independent_clean_install_attempts": 7,
+  "successful_attempts": 5,
+  "failed_evidence_wrapper_attempts": 2,
+  "installation_ms": {
+    "minimum": 60801.56,
+    "median": 64051.48,
+    "maximum": 71590.171
+  },
+  "bootstrap_ms": {
+    "minimum": 11857.228,
+    "median": 12005.435,
+    "maximum": 12817.098
+  },
+  "automated_initialization_ms": {
+    "minimum": 1478.0,
+    "median": 1535.349,
+    "maximum": 1789.132
+  },
+  "time_to_first_real_response_ms": 200135.0,
+  "documented_installer_installation_ms": 90031,
+  "github_exact_ref_installation_ms": 86696,
+  "five_minute_target_met": true,
+  "human_interaction_timed": false,
+  "real_inference": {
+    "verified": true,
+    "classification": "prepared-host local-provider integration",
+    "provider": "OllamaAdapter",
+    "model": "llama3.2:1b",
+    "model_preexisting": true,
+    "model_download_timed": false,
+    "provider_latency_ms": 101597
+  },
+  "fresh_process_persistence_verified": true,
+  "cross_install_portability_verified": true,
+  "secret_canary_excluded_from_export": true,
+  "cloud_inference_verified": false,
+  "verified_platforms": ["Linux x86_64 container", "Linux host lifecycle"],
+  "untested_platforms": ["macOS", "WSL2"],
+  "unsupported_platforms": ["native Windows shell installer"]
+}
